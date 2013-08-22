@@ -1,0 +1,72 @@
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="fill_parent"
+    android:layout_height="fill_parent"
+    android:keepScreenOn="true" >
+    
+    <ImageView
+        android:id="@+id/imageView"
+        android:layout_width="fill_parent"
+        android:layout_height="fill_parent"
+        android:layout_centerInParent="true"
+        android:contentDescription="imgeView for the current photo."
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_launcher" />
+
+    <Button
+        android:id="@+id/Button_NEXT"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignBottom="@+id/Button_NEXT"
+        android:layout_alignParentBottom="true"
+        android:layout_alignParentLeft="true"
+        android:text="@string/next" >
+	</Button>
+	
+	<Button
+	    android:id="@+id/Button_EXIT"
+	    android:layout_width="wrap_content"
+	    android:layout_height="wrap_content"
+	    android:layout_alignParentBottom="true"
+	    android:layout_toRightOf="@+id/Button_NEXT"
+	    android:text="@string/stopident" >
+	
+	</Button>
+	
+	<Button
+	        android:id="@+id/Button_ALL"
+	        android:layout_width="wrap_content"
+	        android:layout_height="wrap_content"
+	        android:layout_alignParentBottom="true"
+	        android:layout_toRightOf="@+id/Button_EXIT"
+	        android:text="@string/allinpic" >
+	</Button>
+	
+	<Button
+	    	android:id="@+id/Button_MATCH"
+	        android:layout_width="wrap_content"
+	        android:layout_height="wrap_content"
+	        android:layout_alignParentTop="true"
+	        android:layout_alignParentRight="true"
+	        android:text="@string/match" >
+	</Button>
+	
+	<Button
+	    	android:id="@+id/Button_CALC_MATCHES"
+	        android:layout_width="wrap_content"
+	        android:layout_height="wrap_content"
+	        android:layout_alignParentTop="true"
+	        android:layout_toLeftOf="@+id/Button_MATCH"
+	        android:text="@string/calc_matches" >
+	</Button>
+	
+	<Button
+	    	android:id="@+id/Button_SET_WEIGHTS"
+	        android:layout_width="wrap_content"
+	        android:layout_height="wrap_content"
+	        android:layout_alignParentTop="true"
+	        android:layout_toLeftOf="@+id/Button_CALC_MATCHES"
+	        android:text="@string/set_weights" >
+	</Button>
+    
+
+</RelativeLayout>
