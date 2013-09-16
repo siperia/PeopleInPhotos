@@ -44,37 +44,41 @@ public class expressionclassifier {
 	
 	private static Context   		parentContext	= null;
 	
-	public expression			   	emotion			= null;
+	public expression			   	nativelib		= null;
 	// labels used in sample categorization
- 	public static final int		   	EMOTION_HAPPY = 0,EMOTION_SAD = 1, EMOTION_ANGRY = 2,
- 									EMOTION_DISGUSTED = 3, EMOTION_AFRAID = 4,
- 								   	EMOTION_NEUTRAL=5; //EMOTION_SURPRISED = 6
+ 	public static final int		   	EMOTION_UNKNOWN = 0, EMOTION_HAPPY = 1,EMOTION_SAD = 2, EMOTION_ANGRY = 3,
+ 									EMOTION_DISGUSTED = 4, EMOTION_AFRAID = 5, EMOTION_NEUTRAL=6; //EMOTION_SURPRISED = 6
  	
  	private final static double s_d = 0.2;
 	private final static double m_d = 0.5;
 	private final static double l_d = 0.8; // small, medium and large difference values
-
+	
  	// emotion distances in symmetrical table. indices are from EMOTION_ values above.
 	// For example (happy,sad) distance is (0,1) = large distance
- 	public static final double[][] exp_dists = {{ 0, l_d, m_d, l_d, l_d, l_d, s_d },
-												{ l_d, 0, m_d, m_d, m_d, m_d, s_d },
-												{ m_d, m_d, 0, m_d, m_d, m_d, m_d },
-												{ l_d, m_d, m_d, 0, m_d, m_d, l_d },
-												{ l_d, m_d, m_d, m_d, 0, m_d, l_d },
-												{ l_d, m_d, m_d, m_d, m_d, 0, m_d },
-												{ s_d, s_d, m_d, l_d, l_d, m_d, 0 }};
+	
+ 	public static final double[][] exp_dists = {{ 0, 0,   0,   0,   0,   0,   0},
+ 												{ 0, 0, l_d, l_d, l_d, l_d, m_d},
+												{ 0, l_d, 0, m_d, m_d, m_d, m_d},
+												{ 0, l_d, m_d, 0, m_d, m_d, l_d},
+												{ 0, l_d, m_d, m_d, 0, m_d, l_d},
+												{ 0, l_d, m_d, m_d, m_d, 0, l_d},
+												{ 0, m_d, m_d, l_d, l_d, l_d, 0}};
  	
  	private CvSVM				   	expressionSVM		= null;
  	private CvSVM				   	genderSVM			= null;
  	private CvSVM					ageSVM				= null;
  	
- 	private Mat					   	emotion_histogram	= null;
+ 	private Mat					   	expression_histogram	= null;
 	private Mat					   	gender_histogram	= null;
 	private Mat					   	age_histogram		= null;
 	
-	public static final int		   	GENDER_MALE = 0, GENDER_FEMALE=1, GENDER_UNKNOWN=2;
+	public static final int			fisher_threshold = 100;
+	public static final int		   	GENDER_UNKNOWN=0, GENDER_MALE=1, GENDER_FEMALE=2;
 	
-	public static final int			AGE_YOUNG = 0, AGE_MIDDLEAGED = 1, AGE_OLD = 2;
+	public static final int			AGE_UNKNOWN=0, AGE_YOUNG=1, AGE_MIDDLEAGED=2, AGE_OLD=3;
+	//age processing
+	private final int				A=3, B=2, P=10;
+	private final float				phase=(float)Math.PI/2;
 	
 	public static final int			INDEX_IDENTITY=0, INDEX_EXPRESSION=1, INDEX_GENDER=2, INDEX_AGE=3;
 	
@@ -91,25 +95,16 @@ public class expressionclassifier {
         // 3x13 (height x width) kernel gives as good result as 3x15, 9x1 and 9x15
         // according to Naika, Das and Nair, but as it is the smallest of these
         // it is the most efficient to be used.
-        emotion = new expression();
-        emotion.setFilterSize(13,3);
+        nativelib = new expression();
+        nativelib.setFilterSize(13,3);
         
         parentContext = parent;
         faceclass = parentFaceClass;
 
         // Use all fisherfaces for gender classification, number of eigenfaces set in "faceclass"
-        //emotion.initModels(0, 250, faceclass.eigenfaces_saved, 250);
-        emotion.initModels(0, 250, 4, 250);
+        nativelib.initModels(0, fisher_threshold, faceclass.eigenfaces_saved, faceclass.eigen_threshold, true);
 	}
-		
-	public void skinThreshold( Mat frame, MatOfRect clip, boolean scan ) {
-		emotion.skinThreshold( frame, clip, scan );
-	}
-	
-	public void GaborLBP_Histograms( Mat pic, Mat hist, Mat LUT, int N, int step, int ind ) {
-		emotion.GaborLBP_Histograms( pic, hist, LUT, N, step, ind );
-	}
-	
+
 	// Parses the given filename to values used internally
 	protected int[] parseAttributes (String fname) {
 		Scanner scan = new Scanner(fname).useDelimiter("_");
@@ -148,8 +143,7 @@ public class expressionclassifier {
 		if (exp == EMOTION_NEUTRAL) return "neutral";
 		return "unknown";
 	}
-		
-
+	
 	// age: http://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=6460367
 	public void trainAttributes() {
 		if (!identRootDir.exists()) {
@@ -157,12 +151,6 @@ public class expressionclassifier {
 					Toast.LENGTH_LONG).show();
 			return;
 		}
-		
-		File[] files = facesDir.listFiles(new FilenameFilter() {
-		    public boolean accept(File dir, String name) {
-		        return name.toLowerCase().endsWith(".jpg");
-		    }
-		});
 		
 		Mat exp_traindata = new Mat();
 		Mat exp_classdata = new Mat();
@@ -173,91 +161,84 @@ public class expressionclassifier {
 		Mat gen_traindata = new Mat();
 		Mat gen_classdata = new Mat();
 		
-		Mat iddata = new Mat();
+		Mat matpic = new Mat();
 		
+		File[] files = faceclass.getJPGList(FaceDetectionAndProcessing.facesDir);
+				
 		for (File file : files) {
-			Bitmap bm = null;
-			Mat matpic = new Mat();
-			try {
-				FileInputStream fis = new FileInputStream(file);
-				bm = BitmapFactory.decodeFile(file.getAbsolutePath());
-				fis.close();
-				Utils.bitmapToMat(bm, matpic);
-				Imgproc.cvtColor(matpic, matpic, Imgproc.COLOR_RGB2GRAY);
-			} catch (IOException e) {
-	            e.printStackTrace();
-	            Log.e(TAG, "IOException: " + e);
-	        }
+			// Parse the classes from the filename
+			int[] attrib = parseAttributes( file.getName() );
+			boolean grab = false;
+			//if ((attrib[INDEX_IDENTITY]==140) && (attrib[INDEX_EXPRESSION]==EMOTION_HAPPY)) grab = true;
 			
-			MatOfRect MoR = new MatOfRect();
-			faceclass.mCascadeClassifier.detectMultiScale(matpic, MoR);
-			Rect[] faces = MoR.toArray();
-			for (int fi = 0; fi < faces.length; fi++) {
-				//skip false positives clearly too small or big to be faces
-				float ratio = (float)faces[fi].height / matpic.height();
-				if (ratio > 0.4 && ratio < 0.9) {					
-					Mat facepic = matpic.submat(faces[fi]).clone();
-					// Parse the classes from the filename
-					boolean grab = false;
-					int[] attrib = parseAttributes( file.getName() );
-					
-					iddata.push_back(new MatOfInt(attrib[INDEX_IDENTITY]));
-					if ((attrib[INDEX_IDENTITY]==140) && (attrib[INDEX_EXPRESSION]==EMOTION_HAPPY)) grab = true;
-					
-					if (grab) helper.savePicture(facepic, false, "orig");
-					
-					Imgproc.equalizeHist(facepic, matpic);
-					if (grab) helper.savePicture(matpic, false, "eqHist");
-										
-					/*matpic = faceclass.gammaCorrect(matpic, 2);
-					if (grab) helper.savePicture(matpic, false, "gamma");
-					
-					matpic = faceclass.localNormalization(matpic, 3);
-					if (grab) helper.savePicture(matpic, false, "local");*/
-					
-					// crop off sides for age recognition - they are irrelevant for the task in hand
-					Imgproc.resize(matpic, facepic, new Size(60,60));
-					Imgproc.resize(matpic, matpic, new Size(64,64));
-					
-					if (grab) helper.savePicture(facepic, false, "resize");
-					
-					// expression and gender processing
-					Mat exp_hist = new Mat();
-					Mat gen_hist = new Mat();
-					Mat age_hist = new Mat();
-					
-					emotion.addFisherface(matpic, attrib[INDEX_GENDER]);
+			Mat facepic = faceclass.getFace( file );
+			if (facepic == null) continue;
+			
+			if (grab) helper.savePicture(facepic, null, false, "eqHist");
+								
+			// TODO clip
+			/* matpic = faceclass.gammaCorrect(matpic, 2);
+			if (grab) helper.savePicture(matpic, false, "gamma");
+			
+			matpic = faceclass.localNormalization(matpic, 3);
+			if (grab) helper.savePicture(matpic, false, "local"); */
 
-					// Calculate the ARLBP and normal 3x3 LBP using uniform patterns for gender classification
-					emotion.ARLBP(matpic, exp_hist, gen_hist, 4, 4);
-					// ARLBP alters the size of matpic
-					
-					exp_traindata.push_back(exp_hist.t().clone());
-					exp_classdata.push_back(new MatOfInt(attrib[INDEX_EXPRESSION]));
+			Imgproc.resize(facepic, matpic, new Size(64,64));
+			Imgproc.resize(facepic, facepic, new Size(60,60));
+			
+			Imgproc.equalizeHist(matpic, matpic);
+			Imgproc.equalizeHist(facepic, facepic); // resizing interpolates
+			
+			if (grab) helper.savePicture(matpic, null, false, "resize");
+ 
+			Mat exp_hist = new Mat();
+			Mat gen_hist = new Mat();
+			Mat age_hist = new Mat();
+			
+			// Calculate the ARLBP and normal 3x3 LBP using uniform patterns for gender classification
+			// ARLBP alters the size of matpic
+			nativelib.ARLBP(matpic, exp_hist, gen_hist, 4, 4);
+						
+			exp_traindata.push_back(exp_hist.t().clone());
+			exp_classdata.push_back(new MatOfInt(attrib[INDEX_EXPRESSION]));
+			
+			/*if (attrib[INDEX_AGE] != AGE_OLD ) {
+				if (attrib[INDEX_EXPRESSION] == EMOTION_NEUTRAL) { 
+					nativelib.addFisherface(matpic, attrib[INDEX_GENDER]);
 					
 					gen_traindata.push_back(gen_hist.t().clone());				
 					gen_classdata.push_back(new MatOfInt(attrib[INDEX_GENDER]));
-					
-					// age processing				
-					facepic = facepic.colRange(5, 53).clone();
-										
-					Mat means = facepic.clone();
-					emotion.ELBP(facepic, 3, 2, 8, (float)Math.PI/2);
-					emotion.localMeanThreshold(means, 3, 3);
-					
-					emotion.concatHist(facepic, means, age_hist);
-					//helper.savePicture(facepic, false, "ELBP");
-										
-					age_traindata.push_back(age_hist.t().clone());
-					age_classdata.push_back(new MatOfInt(attrib[INDEX_AGE]));
-					
-					age_hist = null;
-					exp_hist = null;
-					gen_hist = null;
-					
-					continue;
 				}
+			}*/
+			
+			//Mat genpic = matpic.clone();
+			nativelib.addFisherface(matpic, attrib[INDEX_GENDER]);
+			nativelib.edgeHistogram(matpic, gen_hist);
+			gen_traindata.push_back(gen_hist.t().clone());				
+			gen_classdata.push_back(new MatOfInt(attrib[INDEX_GENDER]));
+			
+			//helper.savePair(matpic, genpic, "genedge");
+			
+			// crop off sides for age recognition - they are irrelevant for the task in hand
+			if (attrib[INDEX_EXPRESSION] == EMOTION_NEUTRAL || attrib[INDEX_EXPRESSION] == EMOTION_HAPPY) {
+				facepic = facepic.colRange(6, 54).clone(); // 60x48 pixels
+				Mat means = facepic.clone();
+				
+				nativelib.ELBP( facepic, A,B,P,phase );
+				nativelib.localMeanThreshold( means, A,B,P,phase );
+				nativelib.concatHist(facepic, means, age_hist);
+				
+				age_traindata.push_back(age_hist.t().clone());
+				age_classdata.push_back(new MatOfInt(attrib[INDEX_AGE]));
 			}
+			
+			//Log.d(TAG, "debug: age:"+age_hist.size()+", dump: "+age_hist.dump());
+			//helper.savePicture(facepic, false, "ELBP");
+			//helper.savePicture(means, false, "mean");
+			
+			age_hist = null;
+			exp_hist = null;
+			gen_hist = null;
 		}
 		
 		Log.d(TAG, "Training");
@@ -273,30 +254,31 @@ public class expressionclassifier {
 		
 		CvSVMParams params = new CvSVMParams();
 		params.set_svm_type(CvSVM.C_SVC);
-		params.set_nu(0.5);
-		params.set_gamma(1);
+		params.set_kernel_type( CvSVM.LINEAR );
+		params.set_C(100);
+		params.set_term_crit(new TermCriteria(TermCriteria.MAX_ITER + TermCriteria.EPS, (int)1e4, 1e-4));
+		
+		Log.d(TAG, "Training gender, "+gen_traindata.height()+" samples");
+		nativelib.trainFisherfaces();
+		if (gen_traindata.size().height > 0) {
+			genderSVM.train(gen_traindata, gen_classdata, new Mat(), new Mat(), params);
+			genderSVM.save(genderSVMname);
+		}
+		
 		params.set_kernel_type(CvSVM.RBF);
-		params.set_term_crit(new TermCriteria(TermCriteria.MAX_ITER + TermCriteria.EPS, 100, 1e-3));
-		/*
+		params.set_gamma(0.01);
+		
+		Log.d(TAG, "Training expression, "+exp_traindata.height()+" samples");
 		if (exp_traindata.size().height > 0) {
-			expressionSVM.train_auto(exp_traindata, exp_classdata, new Mat(), new Mat(), params);
+			expressionSVM.train(exp_traindata, exp_classdata, new Mat(), new Mat(), params);
 			expressionSVM.save(expressionSVMname);
-		}		
-		
-		Log.d(TAG, "Training, expression done.");
-		
+		}
+		/*
+		Log.d(TAG, "Training age, "+age_traindata.height()+" samples");
 		if (age_traindata.size().height > 0) {
 			ageSVM.train_auto(age_traindata, age_classdata, new Mat(), new Mat(), params);
 			ageSVM.save(ageSVMname);
-		}
-		Log.d(TAG, "Training, age done."); */
-		
-		if (gen_traindata.size().height > 0) {
-			genderSVM.train_auto(gen_traindata, gen_classdata, new Mat(), new Mat(), params);
-			genderSVM.save(genderSVMname);
-		}
-		emotion.trainFisherfaces();
-		Log.d(TAG, "Training, gender done.");
+		}*/
 		
 	}	
 	
@@ -308,32 +290,38 @@ public class expressionclassifier {
 		if (!matpic.size().equals(faceclass.facesize)) Imgproc.resize(matpic, matpic, faceclass.facesize, 0, 0, Imgproc.INTER_AREA);
 		int[] retvals = new int[4];
 		
-		//Log.d(TAG, "matpic:"+matpic);
-		
-		emotion_histogram = new Mat();
+		expression_histogram = new Mat();
 		gender_histogram = new Mat();
 		age_histogram = new Mat();
 		
+		//matpic = faceclass.gammaCorrect(matpic, 2);
+		//matpic = faceclass.localNormalization(matpic, 3);
+		
 		// This first to save processing time, ARLBP changes the size of matpic
-		//retvals[INDEX_GENDER] = emotion.predictFisherface(matpic);
+				
+		//retvals[INDEX_GENDER] = nativelib.predictFisherface(matpic);
 		
-		helper.savePicture(matpic, false, "in_");
+		//helper.savePicture(matpic, false, "in_");
+		Mat age_mat = new Mat(60,60,CvType.CV_8U);
+		Imgproc.resize(matpic, age_mat, new Size(60,60), 0, 0, Imgproc.INTER_AREA);
 		
-		emotion.ARLBP(matpic, emotion_histogram, gender_histogram, 4, 4);
+		nativelib.ARLBP(matpic, expression_histogram, gender_histogram, 4, 4);
 		
-		Imgproc.resize(matpic, matpic, new Size(60,60), 0, 0, Imgproc.INTER_AREA);
+		nativelib.edgeHistogram(matpic, gender_histogram);
 		
-		matpic = matpic.colRange(5, 53).clone();
-		Mat means = matpic.clone();
-		emotion.ELBP(matpic, 3, 2, 8, (float)Math.PI/2);
-		emotion.localMeanThreshold(means, 3, 3);
-		emotion.concatHist(matpic, means, age_histogram);
+		age_mat = age_mat.colRange(6, 54).clone(); // 60x48 pixels
+		Mat means = age_mat.clone();
+
+		// Best parameters from "Age Classification in Unconstrained Conditions Using LBP Variants"		
+		nativelib.ELBP( age_mat, 3, 2, 10, (float)Math.PI/2 );
+		nativelib.localMeanThreshold( means, 3, 2, 10, (float)Math.PI/2 );
+		nativelib.concatHist( age_mat, means, age_histogram);
 		
-		emotion_histogram.convertTo(emotion_histogram, CvType.CV_32F);
+		expression_histogram.convertTo(expression_histogram, CvType.CV_32F);
 		gender_histogram.convertTo(gender_histogram, CvType.CV_32F);
 		age_histogram.convertTo(age_histogram, CvType.CV_32F);
 		
-		retvals[INDEX_EXPRESSION] = (int)expressionSVM.predict(emotion_histogram);
+		retvals[INDEX_EXPRESSION] = (int)expressionSVM.predict(expression_histogram);
 		retvals[INDEX_GENDER] = (int)genderSVM.predict(gender_histogram);
 		retvals[INDEX_AGE] = (int)ageSVM.predict(age_histogram);
 				

@@ -18,6 +18,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.Scanner;
 import java.util.Set;
 import java.util.StringTokenizer;
@@ -38,7 +39,10 @@ import org.opencv.core.Point;
 import org.opencv.core.Rect;
 import org.opencv.core.Scalar;
 import org.opencv.core.Size;
+import org.opencv.core.TermCriteria;
 import org.opencv.imgproc.Imgproc;
+import org.opencv.ml.CvSVM;
+import org.opencv.ml.CvSVMParams;
 import org.opencv.objdetect.CascadeClassifier;
 
 import com.siperia.peopleinphotos.Identity.sample;
@@ -52,11 +56,11 @@ import android.widget.Toast;
 
 public class FaceDetectionAndProcessing {
 	private static final String	   TAG = "FaceDetectionAndProcessing";
-	private static final File 	   sdDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES);
-	private static final File	   identRootDir			= new File(sdDir, "PiP_idents");
-	private static final File	   pictureFileDir		= new File(sdDir, "PiP");
-	private static final File      facesDir = new File(pictureFileDir, "FACES");
-	private static final File      facesTestDir = new File(pictureFileDir, "FACEStest");
+	protected static final File	   sdDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES);
+	protected static final File	   identRootDir			= new File(sdDir, "PiP_idents");
+	protected static final File	   pictureFileDir		= new File(sdDir, "PiP");
+	protected static final File    facesDir = new File(pictureFileDir, "FACES");
+	protected static final File    facesTestDir = new File(pictureFileDir, "FACEStest");
 	
 	public CascadeClassifier	   mCascadeClassifier;
     public DetectionBasedTracker   mNativeDetector;
@@ -71,22 +75,20 @@ public class FaceDetectionAndProcessing {
  // TODO: gaborit
     //how many features are picked to be used in identification from (facesize*gabor_subpics)
     private static final int	   useableGVLBPfeatures = 120;
-    private List<Mat>			   gaborKernels			= null;
-    
-    private int					   freq_dividers		= 5;
-	private int					   rotation_dividers	= 8;
-	// stuff used per frame.. initialized here to avoid memory swapping
-	private double[] 			   result				= new double[6400];
-	private double[]			   partialScore 		= new double[6400];
-	private Mat					   LDAProjectionMatrix	= null;
-	private MatOfDouble			   GVLBPcandidate		= null;
+    private MatOfDouble			   LDAProjectionMatrix  = null;
+        
+	private Mat					   GVLBPcandidate		= null;
 	private MatOfDouble			   faceSample			= null;
 	private MatOfDouble			   selectedSamples		= null;
-	// Generic histogram constants
-	private static MatOfInt 	   mHistSize			= null;
-    private static MatOfFloat 	   mRanges				= null;
+	
+	private CvSVM				   gaborSVM				= null;
+	private final double		   GVLBPReject			= 0.89;
+
+	// Generic histogram constants	
+    private static MatOfInt 	   mHistSize			= null;
+	private static MatOfFloat 	   mRanges				= null;
         
-    private MatOfInt			   LUT					= null;
+    protected MatOfInt			   LUT					= null;
     // gabor lookup table for histogram reduction
     
     public static final int        VIOLA_JONES			= 0;
@@ -99,7 +101,11 @@ public class FaceDetectionAndProcessing {
     
     // Face size and holder for resized sample to be identified by any method
     public final Size			   facesize				= new Size(64,64);
-    public final int			   eigenfaces_saved		= 25;
+    public final int			   eigenfaces_saved		= 40;
+        
+    public final int			   eigen_threshold		= 300;
+    // allowed error distance for the recognized
+    
     //private CvSVM			   	   eigenSVM				= null;
     
     private Context				   parentContext;
@@ -141,50 +147,63 @@ public class FaceDetectionAndProcessing {
     }
     
     public void skinThreshold(Mat rgb, MatOfRect clip, boolean scan) {
-    	expclass.skinThreshold(rgb, clip, scan);
+    	expclass.nativelib.skinThreshold(rgb, clip, scan);
     }
     
     public int[] identifyFace(Mat facepic)
     {
     	if (!facepic.isContinuous()) facepic = facepic.clone(); // ensures that the matrix is continuous
-    	if (facepic.channels() != 1) Imgproc.cvtColor(facepic, facepic, Imgproc.COLOR_RGB2GRAY);
-    	
-    	//Log.d(TAG, "facepic:"+facepic);
-    	    	
+    	    	    	
     	if (facepic.size().area() < facesize.area()) {
     		Imgproc.resize(facepic, facepic, facesize, 0, 0, Imgproc.INTER_CUBIC);
     	} else if (facepic.size().area() > facesize.area()) {
     		Imgproc.resize(facepic, facepic, facesize, 0, 0, Imgproc.INTER_AREA);
     	} // Slim chance the ROI is actually facesize'd
     	
+    	if (facepic.channels() != 1) Imgproc.cvtColor(facepic, facepic, Imgproc.COLOR_RGB2GRAY);
     	Imgproc.equalizeHist(facepic, facepic);
     	    	
+    	// TODO, facetesting !
     	int[] retval = expclass.identifyExpression( facepic.clone() );
+    	//int[] retval = new int[4];
     	
     	//facepic = gammaCorrect(facepic,2);
     	//facepic = localNormalization(facepic, 3);
-    	    	
+    	
     	switch (mIdentifierMethod) {
     		case EIGENFACES:
-	    	facepic = facepic.reshape(0, 1);
-	    	
-	    	retval[0] = expclass.emotion.predictEigenface(facepic);
-	    	break;
-	    	
-    	case GVLBP:
-    		/*
-    		double[] tmpconst = new double[useableGVLBPfeatures];
-    		if (selectedSamples == null) selectedSamples = new MatOfDouble();
-    		
-    		double[] faceSample = calculateGVLBPdouble( facepic );
-    		int[] features = identities.get(0).getFeatures();
-    		
-			for (int i=0;i<tmpconst.length;i++) tmpconst[i] = faceSample[features[i]];
-			selectedSamples.fromArray(tmpconst);
-			
-			Core.gemm(LDAProjectionMatrix, selectedSamples, 1, new Mat(), 0, selectedSamples, Core.GEMM_1_T);
+		    	facepic = facepic.reshape(0, 1);
+		    	
+		    	retval[0] = expclass.nativelib.predictEigenface(facepic);
+		    	break;
+		    	
+	    	case GVLBP:
+	    		GVLBPcandidate = new Mat();
+	    		
+	    		/*expclass.localMeanThreshold(facepic, 8, 8);
+				helper.savePicture(facepic, false, "local");*/
+	    		
+	    		expclass.nativelib.GaborLBP_Histograms(facepic, GVLBPcandidate, LUT, 8, -1,-1);
+	    		
+	    		Identity tryID = null;
+	    		retval[0] = (int)gaborSVM.predict(GVLBPcandidate.t());
+	    		// SVM returns some wild ideas as a match if the face is unknown.. lets template match this ID
+	    		// with known samples for that ID and reject if the histogram distance is too much
+	    		for (Identity ID: identities) if (ID.getID()==retval[0]) tryID = ID;
+	    		if (tryID != null) {
+	    			double max = 0;
+	    			double match = 0;
+	    			for (sample s: tryID.getSampleList()) {
+	    				match = Imgproc.compareHist(GVLBPcandidate, s.getGaborMat(), Imgproc.CV_COMP_CORREL);
+	    				if (match > max) max = match;
+	    			}
+	    			Log.d(TAG, "debug: maxmatch:"+max);
+	    			if (max < GVLBPReject) retval[0] = -1;
+	    		}
+	    		
+	    		
+			/*Core.gemm(LDAProjectionMatrix, selectedSamples, 1, new Mat(), 0, selectedSamples, Core.GEMM_1_T);
 			double d1=Core.norm(selectedSamples, Core.NORM_L2);
-			
 	    	double best=Double.MAX_VALUE, dist = 0;
 			for (Identity ID : identities) {
 				for (sample s : ID.getSampleList()) {
@@ -204,7 +223,6 @@ public class FaceDetectionAndProcessing {
 				}
     		}
 			Log.d(TAG, "best score: "+best);*/
-    		retval[0] = -1;
     		break;
 			
     	default: retval[0] = -1; // unknown
@@ -246,10 +264,10 @@ public class FaceDetectionAndProcessing {
 	        is.close();
 	        os.close();
 	        
-	        mNativeDetector = new DetectionBasedTracker(mCascadeFile.getAbsolutePath(), 0);
-	        mCascadeClassifier = new CascadeClassifier(mCascadeFile.getAbsolutePath());
+	        mNativeDetector = new DetectionBasedTracker(mCascadeFile.getAbsolutePath(), 32);
 	        	        
-	        mNativeDetector.setMinFaceSize(64);
+	        mCascadeClassifier = new CascadeClassifier(mCascadeFile.getAbsolutePath());
+	        
 	        cascadeDir.delete();
 	        
 		} catch (IOException e) {
@@ -261,8 +279,8 @@ public class FaceDetectionAndProcessing {
  // Scan the user ident folder and retrain Eigenface classifier with them. 
     public final void trainEigenfaceClassifier() {
     	updateSampleFiles();
-    	
-    	expclass.trainAttributes();
+   	
+    	expclass.nativelib.initModels(0, expressionclassifier.fisher_threshold, eigenfaces_saved, eigen_threshold, false);
 
     	int badcount=0,i=0;
 		for (Identity ID : identities) {
@@ -272,15 +290,21 @@ public class FaceDetectionAndProcessing {
 				
 				// conversion from facesize'd picture to row vector
 				if (matpic != null) {
-					Log.d(TAG, "matpic:"+matpic);
 					Imgproc.resize(matpic, matpic, facesize);
 										
 					//matpic = gammaCorrect(matpic,2);
 			    	//matpic = localNormalization(matpic, 3);
 					
+					Mat tmp = matpic.clone();
 					matpic = matpic.reshape(0,1);
+					expclass.nativelib.addEigenface(matpic, ID.getID());
+					Core.flip(tmp, matpic, 1);
+					matpic = matpic.reshape(0,1);
+					expclass.nativelib.addEigenface(matpic, ID.getID());
 					
-					expclass.emotion.addEigenface(matpic, ID.getID());
+					/*matpic = matpic.reshape(0,64);
+					helper.savePair(tmp,  matpic, "pair");*/
+					
 				} else badcount++;
 				
 				s.releasePicture();
@@ -289,21 +313,19 @@ public class FaceDetectionAndProcessing {
 		if (badcount > 0) Toast.makeText(parentContext, "The dataset includes samples where no face could be found. "+badcount,
 				Toast.LENGTH_LONG).show();
 
-		expclass.emotion.trainEigenfaces();
-		
-		
+		expclass.nativelib.trainEigenfaces();
 	}
     
     public void saveEigenpictures() { 
     	Mat pic[] = new Mat[5];
 		for (int h=0;h<5;h++) pic[h] = Mat.zeros(facesize, CvType.CV_32F);
 		
-		expclass.emotion.getEigenPictures(pic[0], pic[1], pic[2], pic[3], pic[4]);
+		expclass.nativelib.getEigenPictures(pic[0], pic[1], pic[2], pic[3], pic[4]);
 		for (int h=0;h<5;h++) {
 			Core.normalize(pic[h], pic[h], 0, 255, Core.NORM_MINMAX, CvType.CV_8U);
 			pic[h] = pic[h].reshape(0, (int)facesize.width);
 		
-			helper.savePicture(pic[h], false, "Eigen"+h+"_");
+			helper.savePicture(pic[h], null, false, "Eigen"+h+"_");
 		}
     }
     
@@ -313,35 +335,32 @@ public class FaceDetectionAndProcessing {
 					Toast.LENGTH_LONG).show();
 			return;
 		}
+		    	
+		File[] idpics = getJPGList( identRootDir );
+		if (idpics == null) return;
+		identities.clear();
 		
-    	//identities.clear();
-		
-		for (File child : identRootDir.listFiles()) {
-			if (child.isDirectory()) {
-				File IDdir = new File( child.getAbsolutePath() );
-				
-				Identity thisID = null;
-				boolean skip = false;
-				for (Identity ID: identities) {
-					if (ID.equals(IDdir.getName())) {
-						thisID = ID;
-						skip = true;
-					}
-					if (skip) break;
+		for (File pic : idpics) {
+			Scanner scan = new Scanner(pic.getName()).useDelimiter("_");
+			
+			String name = scan.next();
+			int id = scan.nextInt();
+			
+			Identity thisID = null;
+			for (Identity ID: identities) {
+				if (ID.getName().equals(name)) {
+					thisID = ID;
+					continue;
 				}
-				if (!skip) { // new dir, new username
-					thisID = new Identity( IDdir.getName(), identities.size() );
-					identities.add( thisID );
-
-					// then add files from that directory
-					for (File file : IDdir.listFiles()) {
-						if (file.isFile() && !file.isDirectory()) {
-							//Log.d(TAG, "adding "+file.getAbsolutePath());
-							thisID.addSample(file.getAbsolutePath());
-						}
-					}
-				}				
 			}
+			
+			if (thisID == null) {
+				thisID = new Identity( name, id );
+				identities.add( thisID );
+				Log.d(TAG, "debug: added "+name+", "+id);
+			}
+			
+			thisID.addSample(pic.getAbsolutePath());
 		}
     }
     
@@ -408,11 +427,8 @@ public class FaceDetectionAndProcessing {
 	// Function to find 8 best mappings for GVLBP-histograms
 	public void findSimpleUniformLBPIndices() {
 		
-		File[] FACESfiles = facesDir.listFiles(new FilenameFilter() {
-		    public boolean accept(File dir, String name) {
-		        return name.toLowerCase().endsWith(".jpg");
-		    }
-		});
+		File[] FACESfiles = getJPGList(facesDir);
+		
 		Mat sumHist = new Mat();
 		mHistSize = new MatOfInt(256);
 		mRanges = new MatOfFloat(0f, 256f);
@@ -423,49 +439,23 @@ public class FaceDetectionAndProcessing {
 			for (int i=0;i<FACESfiles.length;i++) {
 				File file = FACESfiles[i];
 				
-				Bitmap bm = null;
-				Mat matpic = new Mat();
-				try {
-					FileInputStream fis = new FileInputStream(file);
-					bm = BitmapFactory.decodeFile(file.getAbsolutePath());
-					fis.close();
-					Utils.bitmapToMat(bm, matpic);
-					Imgproc.cvtColor(matpic, matpic, Imgproc.COLOR_RGB2GRAY);
-				} catch (IOException e) {
-		            e.printStackTrace();
-		            Log.e(TAG, "IOException: " + e);
-		        }
+				Mat facepic = getFace(file);
+				MatOfInt hist = new MatOfInt();
 				
-				MatOfRect MoR = new MatOfRect();
-				mCascadeClassifier.detectMultiScale(matpic, MoR);
-				Rect[] faces = MoR.toArray();
-				for (int fi = 0; fi < faces.length; fi++) {
-					// skip false positives clearly too small or big to be faces
-					float ratio = (float)faces[fi].height / matpic.height();
+				// To use this part change the "normal_operation" to false in native GaborLBPHistograms
+				expclass.nativelib.GaborLBP_Histograms(facepic, hist, new Mat(), 0, 1, 15);
+				
+				//Core.normalize(facepic, facepic, 0,255,Core.NORM_MINMAX);
+				/*helper.savePicture(facepic, false, "LBP");
+				hist.convertTo(hist, CvType.CV_32F);*/
+				
+				if (!sumHist.size().equals( hist.size() )) sumHist.create(hist.size(), CvType.CV_32F);
+				Core.add(hist,sumHist,sumHist);
+				
+				Log.d(TAG, "Added "+i+"/"+FACESfiles.length);
 					
-					if (ratio > 0.4 && ratio < 0.9) {
-						Mat facepic = matpic.submat(faces[fi]).clone();
-						MatOfInt hist = new MatOfInt();
-						
-						// To use this part change the "normal_operation" to false in native GaborLBPHistograms
-						expclass.GaborLBP_Histograms(facepic, hist, new Mat(), 0, 1, 15);
-						
-						//Core.normalize(facepic, facepic, 0,255,Core.NORM_MINMAX);
-						helper.savePicture(facepic, false, "LBP");
-						hist.convertTo(hist, CvType.CV_32F);
-						
-						if (!sumHist.size().equals( hist.size() )) sumHist.create(hist.size(), CvType.CV_32F);
-						Core.add(hist,sumHist,sumHist);
-						
-						Log.d(TAG, "Added "+i+"/"+FACESfiles.length);
-					}
-				}
 			}
 			
-			// Detailed accuracy isn't the main thing here so this is close enough. 
-			Log.d(TAG, "sumHist:"+sumHist);
-			//Core.normalize(sumHist, sumHist, 0, 65535, Core.NORM_MINMAX);
-
 			int[] v = new int[1];
 			for (int j=0;j<sumHist.height();j++) {
 				sumHist.get(j, 0, v);
@@ -500,7 +490,6 @@ public class FaceDetectionAndProcessing {
 				
 				scan.close(); br.close(); fr.close();
 			} catch (Exception e1) {
-				// TODO Auto-generated catch block
 				e1.printStackTrace();
 			}
 			
@@ -577,122 +566,161 @@ public class FaceDetectionAndProcessing {
 		}
 	}
     
-	public void genderConfusion() {
-		// Calculate confusion matrix for FACES with current gender classifier
+	public void confusionMatrices() {
+		// Calculate confusion matrices for FACES
 		
-		int[][] confusion = new int[3][3];
+		int[][] gen_confusion = new int[3][3];
+		int[][] age_confusion = new int[4][4];
+		int[][] emo_confusion = new int[7][7];
+		int badcount[] = new int[4];
 		
-		File[] FACEStestfiles = facesTestDir.listFiles(new FilenameFilter() {
-		    public boolean accept(File dir, String name) {
-		        return name.toLowerCase().endsWith(".jpg");
-		    }
-		});
+		File[] FACEStestfiles = getJPGList(facesTestDir);
 		
 		for (File file : FACEStestfiles) {
 			int[] attr = expclass.parseAttributes(file.getName());
+								
+			Mat facepic = getFace(file);
+		
+			int[] recatt = expclass.identifyExpression(facepic);
 			
-			Bitmap bm = null;
-			Mat matpic = new Mat();
-			try {
-				FileInputStream fis = new FileInputStream(file);
-				bm = BitmapFactory.decodeFile(file.getAbsolutePath());
-				fis.close();
-				Utils.bitmapToMat(bm, matpic);
-				Imgproc.cvtColor(matpic, matpic, Imgproc.COLOR_RGB2GRAY);
-			} catch (IOException e) {
-	            e.printStackTrace();
-	            Log.e(TAG, "IOException: " + e);
-	        }
+			/*String s="female";
+			if ( recatt[expressionclassifier.INDEX_GENDER] == expressionclassifier.GENDER_MALE) s = "male";
+			helper.savePicture(facepic, false, "recatt_"+s);*/
 			
-			MatOfRect MoR = new MatOfRect();
-			mCascadeClassifier.detectMultiScale(matpic, MoR);
-			Rect[] faces = MoR.toArray();
-			for (int fi = 0; fi < faces.length; fi++) {
-				float ratio = (float)faces[fi].height / matpic.height();
-				if (ratio > 0.4 && ratio < 0.9) {					
-					Mat facepic = matpic.submat(faces[fi]).clone();
+			if (recatt[expressionclassifier.INDEX_GENDER] >= 0) {
+				gen_confusion[attr[expressionclassifier.INDEX_GENDER]][recatt[expressionclassifier.INDEX_GENDER]]++;
+			} else badcount[expressionclassifier.INDEX_GENDER]++;
+			
+			if (recatt[expressionclassifier.INDEX_AGE] >= 0) {
+				age_confusion[attr[expressionclassifier.INDEX_AGE]][recatt[expressionclassifier.INDEX_AGE]]++;
+			} else badcount[expressionclassifier.INDEX_AGE]++;
 				
-					int[] recatt = expclass.identifyExpression(facepic);
-					
-					confusion[attr[expressionclassifier.INDEX_GENDER]][recatt[expressionclassifier.INDEX_GENDER]]++;
-					
-					continue;
-				}
-			}
+			if (recatt[expressionclassifier.INDEX_EXPRESSION] >= 0) {
+				emo_confusion[attr[expressionclassifier.INDEX_EXPRESSION]][recatt[expressionclassifier.INDEX_EXPRESSION]]++;
+			} else badcount[expressionclassifier.INDEX_EXPRESSION]++;
 		}
 		try {
-			FileWriter fw = new FileWriter(new File(pictureFileDir.getAbsolutePath() +"/gender_confusion.txt"), false);
+			FileWriter fw = new FileWriter(new File(pictureFileDir.getAbsolutePath() +"/confusions.txt"), false);
 			BufferedWriter bw = new BufferedWriter(fw);
 			for (int i=0;i<3;i++) {
 				String s ="";
-				for (int j=0;j<3;j++) s += Integer.toString(confusion[i][j])+" ";
+				for (int j=0;j<3;j++) s += Integer.toString(gen_confusion[i][j])+" ";
 				bw.write(s); bw.newLine();
 			}
+			bw.newLine();
+			
+			for (int i=0;i<4;i++) {
+				String s ="";
+				for (int j=0;j<4;j++) s += Integer.toString(age_confusion[i][j])+" ";
+				bw.write(s); bw.newLine();
+			}
+			bw.newLine();
+			
+			for (int i=0;i<7;i++) {
+				String s ="";
+				for (int j=0;j<7;j++) s += Integer.toString(emo_confusion[i][j])+" ";
+				bw.write(s); bw.newLine();
+			}
+			bw.newLine();
+			
+			String s ="";
+			for (int j=0;j<4;j++) s += Integer.toString(badcount[j])+" ";
+			
+			bw.write(s); bw.newLine();
+			
 			bw.close();
 			fw.close();
-		} catch ( Exception e ) {}
+		} catch ( Exception e ) { helper.crash(); }
 		
 	}
 	
     // Feeds every sample in PiP_idents subfolders and builds a set to compare against	
     public void trainGVLBPClassifier() {
-    	if (identities.isEmpty()) updateSampleFiles();
+    	updateSampleFiles();
 
     	//findSimpleUniformLBPIndices(); //used to create the LUT
-    	int histlen = 0;
+    	int histlen = 0, totalSamples = 0, index = 0;
+    	
+    	Mat training = new Mat();
+    	Mat classes = new Mat();
+    	
 		for (Identity ID: identities) {
-			for (sample s: ID.getSampleList() ) {				
+			for (sample s: ID.getSampleList() ) {
 				Mat hist = new Mat();
 				s.reloadPicture();
 				Mat pic = s.getRawPicture();
 				
-				if (pic != null) expclass.GaborLBP_Histograms(pic, hist, LUT, 8, -1, -1);
-				s.setGaborMat(hist);
-				s.releasePicture();
-				
-				Log.d(TAG, "HIST="+hist.size()+" : "+hist.dump());
-				histlen = (int)hist.size().width; // same for all of them
+				if (s.getRawPicture() != null) {
+					Imgproc.resize(pic, pic, new Size(64,64));
+					Imgproc.equalizeHist(pic, pic);
+					
+					//expclass.localMeanThreshold(pic, 8, 8);
+					expclass.nativelib.GaborLBP_Histograms(pic, hist, LUT, 8, -1,-1);
+					
+					training.push_back(hist.t().clone());
+					classes.push_back(new MatOfInt(ID.getID()));
+					
+					//Log.d(TAG, "debug hist:"+ hist.dump());
+					
+					s.setGaborMat(hist);
+					s.releasePicture();
+				}
+								
+				histlen = (int)hist.size().height; // same for all of them
+				totalSamples++;
 			}
 		}
 		
-		int totalSamples = 0;
-		for (Identity ID : identities) totalSamples += ID.getNumberOfSamples();
+		Log.d(TAG, "debug data:"+training.size()+", classes:"+classes.size());
+		
+		CvSVMParams cvparams = new CvSVMParams();
+		cvparams.set_kernel_type( CvSVM.RBF );
+		cvparams.set_svm_type(CvSVM.C_SVC);
+		cvparams.set_C(100);
+		cvparams.set_gamma(0.01);
+		//cvparams.set_C(1);
+		cvparams.set_term_crit(new TermCriteria(TermCriteria.MAX_ITER, 10000, 0.00001));
+		gaborSVM = new CvSVM(training, classes, new Mat(), new Mat(), cvparams);
+						
+		//for (Identity ID : identities) totalSamples += ID.getNumberOfSamples();
 		// classneed is the total number of picture combinations. The required length for the
 		// classification vector.
-		int index = 0, classneed=0;
-		for (Identity ID : identities)
-		for (Identity inID : identities)
-		if (inID.getID() >= ID.getID())
-		for (@SuppressWarnings("unused") sample s : ID.getSampleList())
-		for (@SuppressWarnings("unused") sample in_s : inID.getSampleList())
-			classneed++;
 		
+		//Log.d(TAG, "debug: classneed "+classneed);
+		
+		/*
 		List<float[]> allData = new ArrayList<float[]>();
-		double[] classVector = new double[ classneed ];
-		float[] tn = new float[6400];
+		List<Double> classList = new ArrayList<Double>();
+		float[] tn = new float[histlen];
 		MatOfFloat diff = new MatOfFloat();
 		index = 0;
-		Log.d(TAG, "hopasd 2");
+		int ones=0, minuses=0;
+		
 		for (Identity ID : identities) {
 			for (Identity inID : identities) {
 				if (inID.getID() >= ID.getID()) {
 					// Every inter-pair processed only once
-					Log.d(TAG, "hopasd 3");
 					for (sample s : ID.getSampleList()) {
 						for (sample in_s : inID.getSampleList()) {
 							// create should do any memory operations only on the first pass
 							diff.create(s.getGaborMat().size(), CvType.CV_32F);
-							Core.absdiff(s.getGaborMat(), in_s.getGaborMat(), diff);
-							diff.convertTo(diff, CvType.CV_32F);
-							allData.add(diff.toArray().clone());
 							
-							if (inID.getID() == ID.getID()) {
-								classVector[index] = 1;
-							} else {
-								classVector[index] = -1;
+							if ( !s.getGaborMat().equals( in_s.getGaborMat() ) ) {
+							
+								Core.absdiff(s.getGaborMat(), in_s.getGaborMat(), diff);
+								diff.convertTo(diff, CvType.CV_32F);
+								allData.add(diff.toArray().clone());
+								
+								Log.d(TAG, "debug: "+ s.getFileName() +" - " + in_s.getFileName() +" - "+ diff.dump());
+								
+								if (inID.getID() == ID.getID()) {
+									classList.add(1.0); ones++;
+								} else {
+									classList.add(-1.0); minuses++;
+								}
+
+								index++;
 							}
-							//Log.d(TAG, "index "+index+", inID:"+inID.getID()+", ID:"+ID.getID()+" >> class "+classVector[index]);
-							index++;
 						}
 					}
 				}
@@ -700,19 +728,31 @@ public class FaceDetectionAndProcessing {
 			}
 		}
 		diff = null;
-		Log.d(TAG, "hopasd 5");
+		//Log.d(TAG, "debug dump: " + helper.FtoString( allData.get(2)) );
+		
+		double[] classVector = new double[ classList.size() ];
+		for (int h=0;h<classList.size();h++) classVector[h] = classList.get(h); // ...
+		
 		// the data needs to be binarized for MI and CMI, so lets calculate the
 		// best possible thresholds for each feature.
 		tn=calculateBinarizationThresholds(allData, classVector);
 		// and binarize allData for feature selection
+		Log.d(TAG, "debug CV: " + helper.DtoString(classVector));
+		Log.d(TAG, "debug feature limits: " + helper.FtoString(tn));
+				
+		ones = 0; minuses = 0;
 		for (float[] fl: allData) {
 			for (int i=0;i<tn.length;i++) {
-				if (fl[i] > tn[i]) fl[i] = 1; else fl[i] = 0;
+				if (fl[i] >= tn[i]) fl[i] = 1;
+				else fl[i] = 0;
 			}
 		}
-		Log.d(TAG, "hopasd 6");
+		
+		Log.d(TAG, "debug binarization, ones - zeroes :"+ones+" - "+minuses);
+		Log.d(TAG, "debug dump: " + helper.FtoString( allData.get(2)) );
+		
 		int[] selectedFeatures = selectFeaturesByMutualInformation(useableGVLBPfeatures, allData, classVector);
-		//Log.d(TAG,"selected:"+ItoString(selectedFeatures));
+		Log.d(TAG,"debug selected:"+helper.ItoString(selectedFeatures));
 
 		for (Identity ID: identities) {
 			ID.setFeaturesAndReduce(selectedFeatures);
@@ -726,15 +766,18 @@ public class FaceDetectionAndProcessing {
 		// Calculate per class and global means
 		Mat meanFace = new Mat();
 		Mat globalGaborMean = new Mat();
-		meanFace = Mat.zeros(new Size(1,selectedFeatures.length), CvType.CV_64F);
 		for (Identity ID: identities) {
 			ID.calculateMeanGabor();
 			for (sample s : ID.getSampleList()) {
+				if (!meanFace.size().equals( s.getFilteredGabor().size()))
+					meanFace.create(s.getFilteredGabor().size(), s.getFilteredGabor().type());
+
 				Core.add(s.getFilteredGabor(), meanFace, meanFace);
+				Log.d(TAG, "debug filtered :"+s.getFilteredGabor().dump());
 			}
 		}
 		Core.divide(meanFace, Scalar.all(totalSamples), globalGaborMean);
-		Log.d(TAG, "globalGaborMean:"+globalGaborMean.size()+", "+globalGaborMean.dump());
+		Log.d(TAG, "debug globalGaborMean:"+globalGaborMean.size()+", "+globalGaborMean.dump());
 		meanFace = null;
 		
 		Mat delta = new Mat();
@@ -769,22 +812,28 @@ public class FaceDetectionAndProcessing {
 		Core.divide(betweenClassScatterSum, Scalar.all(totalSamples), betweenClassScatterSum);
 		Core.divide(withinClassScatterSum, Scalar.all(totalSamples), withinClassScatterSum);
 		
-		// Solve the eigenvalue problem (Sb^-1 Sw)W = W labda
+		Log.d(TAG, "debug wCSS: "+withinClassScatterSum.dump());
+		Log.d(TAG, "debug bCSS: "+betweenClassScatterSum.dump());
+				
+		// Solve the eigenvalue problem (Sb^-1 Sw)W = W lambda
 		Core.gemm( withinClassScatterSum.inv(Core.DECOMP_SVD),
-				betweenClassScatterSum, 1, new Mat(), 0, scatter, 0);
+				   betweenClassScatterSum, 1, new Mat(), 0, scatter, 0);
 		//Log.d(TAG, "LDAs:"+scatter.size()+", con: "+scatter.dump());
 		LDAProjectionMatrix = new MatOfDouble();
 		LDAProjectionMatrix.create(scatter.size(), CvType.CV_64F);
 		Mat eigenvalues = new Mat();
 		Core.eigen(scatter, true, eigenvalues, LDAProjectionMatrix);
 		
+		Log.d(TAG, "debug projection: "+LDAProjectionMatrix);
+		
 		for (Identity ID: identities) {
 			ID.updateToLDA( LDAProjectionMatrix );
 			//for (sample s: ID.getSampleList()) Log.d(TAG, "ID:"+ID.getName()+" LDA:" + s.getLDA().dump());
 		}
 		scatter = null;
+		*/
 	}
-      
+    
 	private int[] selectFeaturesByMutualInformation(int k, List<float[]> pdist, double[] classVector) {
     	assert( classVector.length > 0 );
     	assert( pdist.size() > 0 );
@@ -792,7 +841,8 @@ public class FaceDetectionAndProcessing {
     	
     	int noOfFeatures = pdist.get(0).length;
     	
-    	Arrays.fill(partialScore, 0);
+    	double partialScore[] = new double[ noOfFeatures ];
+    	//Arrays.fill(partialScore, 0);
     	
     	int[] m = new int[noOfFeatures];
     	int[] answerFeatures = new int[useableGVLBPfeatures];
@@ -835,44 +885,254 @@ public class FaceDetectionAndProcessing {
     	}
     	return answerFeatures;
 	}
-
     
     // calculates the threshold for limiting feature values to binary in GVLBP
     // eq.12 in the relevant document
     private float[] calculateBinarizationThresholds(List<float[]> pdist, double[] classVector) {
+    	assert(classVector.length > 0);
     	assert(pdist.size() == classVector.length);
     	
-    	float[] ret_best_tn = new float[ pdist.get(0).length ];
-    	for (int feature = 0; feature < pdist.get(0).length; feature++) {
-    	    	// how many threshold values are attempted between min(pdist) and max(pdist)
-	    	final int steps = 16;
-	    	float f=0,g=Float.MAX_VALUE;
-	    	int i = 0;
-	    	while (i < pdist.size()) {
-	    		if (pdist.get(i)[feature] > f) f = pdist.get(i)[feature];
-	    		if (pdist.get(i)[feature] < g) g = pdist.get(i)[feature];
-	    		i++;
+    	int features = pdist.get(0).length;
+    	int samples = pdist.size();
+    	
+    	float[] ret_best_tn = new float[ features ];
+    	for (int feature = 0; feature < features; feature++) {
+	    	// how many threshold values are attempted between min(pdist) and max(pdist)
+	    	final int steps = 128;
+	    	float maxim=0,minim=Float.MAX_VALUE;
+	    	
+	    	for (int i = 0; i < samples; i++) {
+	    		if (pdist.get(i)[feature] > maxim) maxim = pdist.get(i)[feature];
+	    		if (pdist.get(i)[feature] < minim) minim = pdist.get(i)[feature];
 	    	}
-	    	float best = Float.MAX_VALUE, best_tn= Float.MAX_VALUE, searchstep = (f-g)/steps;
-	    	if ((f-g) > 0) {
-		    	for (float tn=g; tn<=f; tn+=searchstep) {
-			    	float sum=0;
-			    	for (i=0;i<pdist.size();i++) {
-			    		if (classVector[i] > 0) { //inter sample
-			    			if (pdist.get(i)[feature] >= tn) sum += pdist.get(i)[feature]; 
-			    		} else { // intra sample
-			    			if (pdist.get(i)[feature] < tn) sum += pdist.get(i)[feature];
+	    	
+	    	float best = Float.MAX_VALUE, best_tn= Float.MAX_VALUE, searchstep = (maxim-minim)/steps;
+	    	//Log.d(TAG, "debug ss:"+searchstep);
+	    	float sum=0;
+	    	if ((maxim-minim) > 0) {
+		    	for (float tn=minim; tn<=maxim; tn+=searchstep) {
+			    	sum = 0;
+			    	for (int i=0;i<samples;i++) {
+			    		if (classVector[i] > 0) {
+			    			// inter-sample
+			    			if (pdist.get(i)[feature] >= tn) { sum += pdist.get(i)[feature]; }
+			    		} else {
+			    			// intra-sample
+			    			if (pdist.get(i)[feature] < tn) { sum += pdist.get(i)[feature]; }
 			    		}
 			    	}
+			    	//Log.d(TAG, "debug sum:"+sum);
 			    	if (sum < best) {
 			    		best = sum;
 			    		best_tn = tn;
+			    		//Log.d(TAG, "debug best:"+best);
 			    	}
 		    	}
 		    	ret_best_tn[feature] = best_tn;
+		    	//Log.d(TAG, "debug tn:"+best_tn);
 	    	}
     	}
     	return ret_best_tn;
     }
+
+    // test recognition accuracy with currently selected method
+	public void recognitionTest() {
+		Random generator = new Random( System.currentTimeMillis() );
+		File[] FACESfiles = getJPGList(facesTestDir);
+		final String resultFile = identRootDir.getAbsolutePath() + "/facerecog_result.txt";
+		
+		Map<Integer,Integer> idlist = new TreeMap<Integer,Integer>();
+		Map<Integer,Integer> idcounts = new TreeMap<Integer,Integer>();
+		List<String> usedFiles = new ArrayList<String>();
+		
+		for (int numberOfIDs = 9; numberOfIDs < 11; numberOfIDs++)
+		for (int trainingPerID = 2; trainingPerID < 6; trainingPerID++) {
+			Log.d(TAG, "debug: noid:"+numberOfIDs+", tr:"+trainingPerID);
+			
+			clearIdents();
+			idlist.clear();
+			idcounts.clear();
+			usedFiles.clear();
+			helper.shuffleFileArray( FACESfiles );
+			
+			int count = 0;
+			for (int i=0;i<FACESfiles.length;i++) {
+				int[] atr = expclass.parseAttributes( FACESfiles[i].getName() );
+				int id = atr[expressionclassifier.INDEX_IDENTITY];
+				
+				boolean add = false;
+				count = 0;
+				
+				// Determine if we need more samples for existing ID or if
+				// we can add a new ID
+				if (idlist.containsKey(id)) {
+					count = idcounts.get(id);
+					if (count < trainingPerID) add = true;
+				} else if ( idlist.size() < numberOfIDs) add = true;
+				
+				if (add) {
+					Mat face = getFace( FACESfiles[i] );
+					if (face == null) continue; //meh
+					
+					if (!idcounts.containsKey(id)) idcounts.put(id, 0);
+					
+					int order = 0; //confusing as in FACES name=ID number, in identities ID is just a key for the name
+					boolean found = false;
+					int maxID = -1;
+					for (Entry<Integer,Integer> ID: idlist.entrySet()) {
+						if (ID.getValue() > maxID) maxID = ID.getValue();
+						if (ID.getKey() == id) {
+							order = ID.getValue();
+							found = true;
+						}
+						//Log.d(TAG, "debug: "+ID.getKey()+", "+id+", order:"+order);
+					}
+					if (!found) order = maxID+1; // new ID
+						
+					String finalName = identRootDir.getAbsolutePath()+"/"+id+"_"+order+"_"+Integer.toString(generator.nextInt())+".jpg";
+										
+					Bitmap bitmap = Bitmap.createBitmap(face.width(), face.height(), Bitmap.Config.ARGB_8888);
+					Utils.matToBitmap(face, bitmap);
+					
+					try{
+						//Log.d(TAG, "debug: writing file "+finalName);
+						FileOutputStream fos = new FileOutputStream( finalName );
+						bitmap.compress(Bitmap.CompressFormat.JPEG, 100, fos);
+						fos.close();
+					} catch (Exception error) { }
+					
+					idlist.put(id, order);
+					idcounts.put(id, idcounts.get(id)+1);
+					usedFiles.add(FACESfiles[i].getName());
+				}
+			}
+			
+			Log.d(TAG, "debug entries:");
+			for (Entry<Integer,Integer> ID: idlist.entrySet()) {
+				Log.d(TAG, "debug: "+ID.getKey() + " - "+ID.getValue() + ", count "+idcounts.get(ID.getKey()));
+			}
+			
+			// now retrain
+			switch (mIdentifierMethod) {
+			case EIGENFACES:
+				trainEigenfaceClassifier();
+				break;
+			case GVLBP:
+				trainGVLBPClassifier();
+				break;
+				default:break;
+			}
+			
+			Log.d(TAG, "debug: Trainded with "+numberOfIDs+" IDs, "+trainingPerID+" faces per ID");
+						
+			// counters for results
+			int processed=0, correct=0, incorrect=0, false_positive=0;
+			for (File file: FACESfiles) {
+				// skip faces used in training
+				boolean bad = false;
+				for (String used: usedFiles) if (file.getName().equals(used)) { bad = true; continue; }
+				if (bad) continue;
+			
+				Mat face = getFace( file );
+				if (face == null) continue;
+				
+				int[] result = identifyFace( face );
+				
+				int recognized = result[expressionclassifier.INDEX_IDENTITY];
+				int found_id = -1;
+				for (Identity ID: identities) if (ID.getID() == recognized) found_id = Integer.parseInt(ID.getName());
+				
+				int[] atr = expclass.parseAttributes( file.getName() );
+				int true_id = atr[expressionclassifier.INDEX_IDENTITY];
+				
+				String added = "";
+				if (found_id > -1) { // not unknown hit
+					if ( true_id == found_id ) {
+						correct++;
+						added = "positive hit";
+					} else {
+						false_positive++;
+						added = "false positive";
+					}
+				}
+				
+				if ( idlist.containsKey(true_id) && (found_id == -1)) {
+					incorrect++;
+					added = "negative hit";
+				}
+				processed++;
+				
+				Log.d(TAG, "debug: processed "+file.getName()+", got ID "+recognized+"("+found_id+") "+added);
+			}
+			
+			String result = "result: error_threshold="+eigen_threshold+", " +eigenfaces_saved+" eigenfaces, ";
+			result += Integer.toString(numberOfIDs)+" IDs, "+Integer.toString(trainingPerID);
+			result += " faces per ID, correct "+Integer.toString(correct)+", incorrect "+Integer.toString(incorrect);
+			result += ", false positives: "+Integer.toString(false_positive);
+			result += ", processed:"+Integer.toString(processed);
+			result += " = " + Float.toString( (float)correct / (float)(correct+incorrect+false_positive) ) + " recognition rate.";
+			Log.d(TAG, result);
+			helper.dumpLine(resultFile, result);
+		}
+		
+		clearIdents();
+	}
+	
+	private void deleteFiles( File[] files ) {
+		for (File file: files) file.delete();
+	}
+	
+	// deletes every folder and their contents in /pip_idents
+	private void clearIdents() {
+		File[] files = getJPGList( identRootDir );
+				
+		if (files != null && files.length > 0) {
+			for (File file: files) file.delete();
+		}
+		updateSampleFiles();
+	}
+	
+	protected File[] getJPGList( File dir ) {
+		File[] filelist = dir.listFiles(new FilenameFilter() {
+		    public boolean accept(File dir, String name) {
+		        return name.toLowerCase().endsWith(".jpg");
+		    }
+		});
+		return filelist;
+	}
+
+	// extracts an usable training face from file, meant to be used with 
+	// images picked by user as new ID's or FACES-data
+	protected Mat getFace(File file) {
+		Bitmap bm = null;
+		Mat matpic = new Mat();
+		try {
+			FileInputStream fis = new FileInputStream(file);
+			bm = BitmapFactory.decodeFile(file.getAbsolutePath());
+			fis.close();
+			Utils.bitmapToMat(bm, matpic);
+		} catch (IOException e) {
+            e.printStackTrace();
+            Log.e(TAG, "IOException: " + e);
+        }
+		
+		MatOfRect MoR = new MatOfRect();
+		mCascadeClassifier.detectMultiScale(matpic, MoR);
+		Rect[] faces = MoR.toArray();
+		for (int fi = 0; fi < faces.length; fi++) {
+			float ratio = (float)faces[fi].height / matpic.height();
+			if (ratio > 0.4 && ratio < 0.9) {
+				Mat retpic = matpic.submat(faces[fi]).clone();
+				Imgproc.cvtColor(retpic, retpic, Imgproc.COLOR_RGB2GRAY);
+				Imgproc.equalizeHist(retpic, retpic);
+				return retpic;
+			}
+		}
+		
+		//helper.savePicture(matpic, null, false, "CRASH_");
+		Log.d(TAG, "debug: null face");
+		return null;
+	}
+	
     
 }

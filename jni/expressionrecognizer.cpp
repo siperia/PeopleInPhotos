@@ -16,36 +16,46 @@
 #define genderFisherFile "/storage/sdcard0/Pictures/PiP_idents/genderFisherfaces.xml"
 #define eigenfacesFile "/storage/sdcard0/Pictures/PiP_idents/eigenfaces.xml"
 
-#define PI_2 6.283185307179586476925286766559
-
 using namespace cv;
 
 expression_recognizer::expression_recognizer() :
-		height(1), width(1), cutoffPoint(0), currA(0), currB(0), currP(0), currPhase(0) {
+		height(1), width(1), cutoffPoint_8(0), cutoffPoint_10(0), currA(0), currB(0), currP(0), currPhase(0) {
 
 	for (unsigned int i=0;i<8;i++) area[i]=0.0f;
 	trained = false;
 
 	// building of uniform LBP index lookup table.
 	// A uniform pattern has exactly 2 binary transitions in it, i.e. 00111000, 11110111, 00000010 etc
-	Mat LUT = Mat(1, 256, CV_8U, 255);
-	unsigned int count=0;
-	for (unsigned int i=0;i<256;i++) {
-		unsigned int transitions=0;
-		for (unsigned int bit=0;bit<7;bit++) { //compare bits 1-7 to bits 2-8
-			if ( ((i & powtable[bit]) > 0) != ((i & powtable[bit+1]) > 0) ) transitions++;
-		}
-		if ( ((i& powtable[0])>0) != ((i&powtable[7])>0) ) transitions++; // cyclic
+	Mat LUT_8 = Mat(1, 256, CV_8U, 255);
+	Mat LUT_10 = Mat(1, 1024, CV_16U, 1023);
+	unsigned int count_8=0, count_10=0;
+	for (unsigned int i=0;i<1024;i++) {
+		unsigned int trans_8=0, trans_10=0;
 
-		if (transitions == 2) {
-			cutoffPoint = count;
-			LUT.at<uchar>(0,i) = count++;
+		for (unsigned int bit=0;bit<9;bit++) { //compare bits 1-7 to bits 2-8 etc
+			bool transition = ((i & powtable[bit]) > 0) != ((i & powtable[bit+1]) > 0);
+			if ( transition && (bit < 7) ) trans_8++;
+			if ( transition ) trans_10++;
 		}
-		else LUT.at<uchar>(0,i) = 255;
+
+		if (i < 256) {
+			if (((i& powtable[0])>0) != ((i&powtable[7])>0)) trans_8++; // cyclic
+			if (trans_8 <= 2) {
+				LUT_8.at<uchar>(0,i) = count_8;
+				cutoffPoint_8 = ++count_8;
+			}
+		}
+
+		if ( ((i& powtable[0])>0) != ((i&powtable[9])>0)) trans_10++;
+		if (trans_10 <= 2) {
+			LUT_10.at<unsigned short>(0,i) = count_10;
+			cutoffPoint_10 = ++count_10;
+		}
 	}
 
-	uniforms = LUT.clone();
-	LOGD("Uniform patterns: %u", cutoffPoint);
+	uniforms_8 = LUT_8.clone();
+	uniforms_10 = LUT_10.clone(),
+	LOGD("debug: Uniform patterns: %u(8b) and %u(10b)", cutoffPoint_8, cutoffPoint_10);
 
 	generate_gabor_kernels();
 
@@ -54,12 +64,17 @@ expression_recognizer::expression_recognizer() :
 expression_recognizer::~expression_recognizer() {
 }
 
-void expression_recognizer::initModels( int fisherfaces, double fisher_conf, int eigenfaces, double eigen_conf ) {
-	fisherface_model = createFisherFaceRecognizer(fisherfaces, fisher_conf);
-	fisherface_model->load(genderFisherFile);
+void expression_recognizer::initModels( int fisherfaces, double fisher_conf, int eigenfaces, double eigen_conf, bool load ) {
+	fisherface_model.release();
+	eigenface_model.release();
 
+	fisherface_model = createFisherFaceRecognizer(fisherfaces, fisher_conf);
 	eigenface_model = createEigenFaceRecognizer(eigenfaces, eigen_conf);
-	eigenface_model->load(eigenfacesFile);
+
+	if (load) {
+		fisherface_model->load(genderFisherFile);
+		eigenface_model->load(eigenfacesFile);
+	}
 }
 
 void expression_recognizer::addFisherface(cv::Mat& face, int classification) {
@@ -70,6 +85,9 @@ void expression_recognizer::addFisherface(cv::Mat& face, int classification) {
 void expression_recognizer::trainFisherfaces() {
 	fisherface_model->train(fisherSamples, fisherClassifications);
 	fisherface_model->save(genderFisherFile);
+
+	fisherSamples.clear();
+	fisherClassifications.clear();
 }
 
 int expression_recognizer::predictFisherface( Mat& face ) const {
@@ -84,6 +102,9 @@ void expression_recognizer::addEigenface(Mat& face, int classification) {
 void expression_recognizer::trainEigenfaces() {
 	eigenface_model->train(eigenSamples, eigenClassifications);
 	eigenface_model->save(eigenfacesFile);
+	eigenSamples.clear();
+	eigenClassifications.clear();
+	//so we can just append new training data to start a new training process
 }
 
 int expression_recognizer::predictEigenface( Mat& face ) const {
@@ -219,57 +240,63 @@ void expression_recognizer::skinThreshold(Mat& frame, vector<Rect>& result, bool
 // http://www.ee.oulu.fi/~topiolli/cpplibs/files/LBP.c
 // Interpolation deemed less important as this is used in method where sides are clipped off
 // A = horizontal axis, B = vertical axis, P = steps. A=1,B=1,P=8 generates the normal 3x3 LBP
+void expression_recognizer::updateELBPkernel( int A, int B, int P, float phase ) {
+	float step = (M_PI * 2) / P;
+
+	for (unsigned int i = 0; i < P; i++) {
+		float tmpX = A * cos(i * step + phase);
+		float tmpY = B * sin(i * step + phase);
+		ELBP_coords[i].x = (int)tmpX;
+		ELBP_coords[i].y = (int)tmpY;
+		offsets[i].x = tmpX - ELBP_coords[i].x;
+		offsets[i].y = tmpY - ELBP_coords[i].y;
+		if (offsets[i].x < 1.0e-10 && offsets[i].x > -1.0e-10) /* rounding error */
+			offsets[i].x = 0;
+		if (offsets[i].y < 1.0e-10 && offsets[i].y > -1.0e-10) /* rounding error */
+			offsets[i].y = 0;
+
+		if (tmpX < 0 && offsets[i].x != 0) {
+			ELBP_coords[i].x -= 1;
+			offsets[i].x += 1;
+		}
+		if (tmpY < 0 && offsets[i].y != 0) {
+			ELBP_coords[i].y -= 1;
+			offsets[i].y += 1;
+		}
+	}
+	currA = A; currB = B; currP = P; currPhase = phase;
+}
+
+#define access(T, m, y, x) if (x < 0 || x >= m.size().width || y < 0 || y >= m.size().height) { LOGD("ERROR %i", __LINE__); }
+
 void expression_recognizer::ELBP(cv::Mat& face, unsigned int A, unsigned int B, unsigned int P, float phase) {
 	CV_Assert(face.size().area() > 0);
 	CV_Assert( A != 0 && B != 0 && P != 0);
+	Mat ELBP( face.size(), CV_16UC1 );
 
-	Mat ELBP( face.size(), CV_8UC1 );
-
-	if (A != currA || B != currB || P != currP || currPhase != phase) {
-		float step = PI_2 / P;
-
-		for (unsigned int i = 0; i < P; i++) {
-			float tmpX = P * cos(i * step);
-			float tmpY = P * sin(i * step);
-			ELBP_coords[i].x = (int)tmpX;
-			ELBP_coords[i].y = (int)tmpY;
-			offsets[i].x = tmpX - ELBP_coords[i].x;
-			offsets[i].y = tmpY - ELBP_coords[i].y;
-			if (offsets[i].x < 1.0e-10 && offsets[i].x > -1.0e-10) /* rounding error */
-				offsets[i].x = 0;
-			if (offsets[i].y < 1.0e-10 && offsets[i].y > -1.0e-10) /* rounding error */
-				offsets[i].y = 0;
-
-			if (tmpX < 0 && offsets[i].x != 0) {
-				ELBP_coords[i].x -= 1;
-				offsets[i].x += 1;
-			}
-			if (tmpY < 0 && offsets[i].y != 0) {
-				ELBP_coords[i].y -= 1;
-				offsets[i].y += 1;
-			}
-		}
-		currA = A; currB = B; currP = P; currPhase = phase;
-	}
+	if (A != currA || B != currB || P != currP || currPhase != phase) updateELBPkernel( A,B,P,phase );
 
 	unsigned int fw = face.size().width;
 	unsigned int fh = face.size().height;
 
 	for (unsigned int y=0;y<fh;y++) {
 		for (unsigned int x=0;x<fw;x++) {
-			unsigned int ELBP_code = 0;
+			unsigned short ELBP_code = 0;
 			for (unsigned int i=0; i<P; i++) {
 				unsigned int relx = ELBP_coords[i].x+x;
 				unsigned int rely = ELBP_coords[i].y+y;
+				access(uchar, face, y, x);
 				uchar center = face.at<uchar>(y,x);
 
 				if (relx >= 0 && relx < fw) {
 					if (rely >= 0 && rely < fh) {
+						access(uchar, face, rely, relx);
 						if (face.at<uchar>(rely,relx) >= center) ELBP_code += powtable[i];
 					}
 				}
 			}
-			ELBP.at<uchar>(y,x) = ELBP_code;
+			access(unsigned short, ELBP, y, x);
+			ELBP.at<unsigned short>(y,x) = ELBP_code;
 		}
 	}
 
@@ -277,60 +304,95 @@ void expression_recognizer::ELBP(cv::Mat& face, unsigned int A, unsigned int B, 
 }
 
 // prepare a photo with CLBP_M (Completed LBP-Magnitude)
-void expression_recognizer::localMeanThreshold(cv::Mat& face, int vdivs, int hdivs) {
+void expression_recognizer::localMeanThreshold(Mat& face, int A, int B, int P, float phase) {
 	CV_Assert( face.depth() == CV_8U );
-	CV_Assert( face.size().area() > 0 );
-	CV_Assert( vdivs > 0 && hdivs > 0);
+	CV_Assert( face.size().width == 48 && face.size().height == 60 );
+	CV_Assert( A > 0 && B > 0 && P > 0 );
 
-	unsigned int yskip = (int)((float)face.size().height / vdivs);
-	unsigned int xskip = (int)((float)face.size().width / hdivs);
+	if (A != currA || B != currB || P != currP || currPhase != phase) updateELBPkernel( A,B,P,phase );
 
-	Mat clone = face.clone();
+	unsigned int fw = face.size().width;
+	unsigned int fh = face.size().height;
+	unsigned int marginal = (currA >= currB) ? currA : currB;
 
-	// 1. calculate the mean of magnitude differences locally
-	for (unsigned int y = 0; y < vdivs; y++) {
-		for (unsigned int x = 0; x < hdivs; x++) {
-			Mat ROI = face.rowRange(y*yskip,(y+1)*yskip).colRange(x*xskip,(x+1)*xskip);
+	Mat local_mean = Mat(face.size(), CV_32F);
+	float total_mean=0;
 
-			//threshold(ROI, ROI, local_mean, local_mean, THRESH_BINARY);
-			ROI = (int)mean(ROI).val[0];
+	copyMakeBorder(face,face,marginal,marginal,marginal,marginal,BORDER_REPLICATE); //replication difference = 0
+
+	// local difference mean per pixel
+	for (unsigned int y = marginal; y<fh+marginal; y++) {
+		for (unsigned int x = marginal; x<fw+marginal; x++) {
+			float sum=0;
+			access(uchar, face,y, x);
+			uchar center = face.at<uchar>(y,x);
+
+			for (unsigned int i=0; i<currP; i++) {
+				unsigned int relx = ELBP_coords[i].x+x;
+				unsigned int rely = ELBP_coords[i].y+y;
+
+				access( uchar, face, rely, relx )
+				uchar cmp = face.at<uchar>(rely,relx);
+				sum += (float)abs(center - cmp);
+			}
+
+			sum /= (float)currP;
+			access( float, local_mean, y-marginal, x-marginal )
+			local_mean.at<float>(y-marginal,x-marginal) = sum;
+			total_mean += sum;
+		}
+	}
+	total_mean /= local_mean.size().area();
+	//LOGD("debug: total mean %f", total_mean);
+
+	// ELBP
+	face.convertTo(face, CV_16U);
+	unsigned short ELBP_code = 0;
+	copyMakeBorder(local_mean,local_mean,marginal,marginal,marginal,marginal,BORDER_REPLICATE);
+
+	for (unsigned int y=marginal;y<fh+marginal;y++) {
+		for (unsigned int x=marginal;x<fw+marginal;x++) {
+			ELBP_code = 0;
+
+			for (unsigned int i=0; i<currP; i++) {
+				unsigned int relx = ELBP_coords[i].x+x;
+				unsigned int rely = ELBP_coords[i].y+y;
+
+				access( float, local_mean, rely, relx )
+				if (local_mean.at<float>(rely,relx) >= total_mean) ELBP_code += powtable[i];
+			}
+
+			access( unsigned short, face, y-marginal, x-marginal )
+			face.at<unsigned short>(y-marginal,x-marginal) = ELBP_code;
 		}
 	}
 
-	copyMakeBorder(clone,clone,1,1,1,1,BORDER_CONSTANT,Scalar(0,0,0));
+	face = face.colRange(0, fw).rowRange(0, fh);
+}
 
-	for (unsigned int y=1;y<clone.size().height-1;y++) {
-		for (unsigned int x=1;x<clone.size().width-1;x++) {
-			unsigned int pixel = 0;
-			unsigned int center = clone.at<uchar>(y,x);
-			unsigned int cmp = face.at<uchar>(y-1,x-1);
+void expression_recognizer::uniformalize10( Mat& mat ) {
+	CV_Assert( mat.size().height > 0 && mat.size().width == 1 ); // a histogram
+	//LOGD("debug: histsize: %u"+mat.size().height);
 
-			if (std::abs(center - clone.at<uchar>(y-1,x-1)) >= cmp)	pixel += powtable[0];
-			if (std::abs(center - clone.at<uchar>(y-1,x)) >= cmp)	pixel += powtable[1];
-			if (std::abs(center - clone.at<uchar>(y-1,x+1)) >= cmp)	pixel += powtable[2];
-			if (std::abs(center - clone.at<uchar>(y,x+1)) >= cmp)	pixel += powtable[3];
-			if (std::abs(center - clone.at<uchar>(y+1,x+1)) >= cmp)	pixel += powtable[4];
-			if (std::abs(center - clone.at<uchar>(y+1,x)) >= cmp)	pixel += powtable[5];
-			if (std::abs(center - clone.at<uchar>(y+1,x-1)) >= cmp)	pixel += powtable[6];
-			if (std::abs(center - clone.at<uchar>(y,x-1)) >= cmp)	pixel += powtable[7];
-
-			face.at<uchar>(y-1,x-1) = pixel;
-		}
+	for (unsigned int i=0;i<mat.size().height;i++) {
+		uchar loc = mat.at<uchar>(i,0);
+		mat.at<unsigned short>(i,0) = uniforms_10.at<unsigned short>(0,loc);
 	}
-
-	//face = face.rowRange(1, face.size().height).colRange(1, face.size().width).clone();
-	//face = clone;
-
+	mat = mat.rowRange(0,cutoffPoint_10).clone();
 }
 
 void expression_recognizer::concatHist(Mat& mat1, Mat& mat2, Mat& hist) {
+
+	CV_Assert( mat1.type() == CV_16U ); // Straight ELBP 10b
+	CV_Assert( mat2.type() == CV_16U ); // Means with 10b ELBP
 
 	int hskip = (int)((float)mat1.size().width / 6);
 	int vskip = (int)((float)mat1.size().height / 6);
 
 	Mat tempHist;
-	int histSize[] = {256};
-	float range[] = {0, 256};
+	Mat firstHist, secondHist;
+	int histSize[] = {65536};
+	float range[] = {0, 65536};
 	const float* histRange[] = {range};
 	int channels[]={0};
 
@@ -340,24 +402,34 @@ void expression_recognizer::concatHist(Mat& mat1, Mat& mat2, Mat& hist) {
 			Mat roi=mat1.rowRange(vskip*y, vskip*(y+1)).colRange(hskip*x,hskip*(x+1));
 			// calculate the histogram of that ROI
 			cv::calcHist(&roi, 1, 0, Mat(), tempHist, 1, histSize, histRange, true, false );
-			// append to the histogram to be returned.
-			hist.push_back(tempHist.clone());
+			//LUT(tempHist, uniforms_16, tempHist); // Oh, right.. LUT works only for 8bit tables.. *sigh*
+
+			uniformalize10( tempHist );
+
+			firstHist.push_back(tempHist.clone());
 		}
 	}
 
-	hskip = (int)((float)mat1.size().width / 3);
-	vskip = (int)((float)mat1.size().height / 3);
+	hskip = (int)((float)mat2.size().width / 3);
+	vskip = (int)((float)mat2.size().height / 3);
 
 	for (unsigned int y=0;y<3;y++) {
 		for (unsigned int x=0;x<3;x++) {
-			// select sub-region as region of interest
-			Mat roi=mat1.rowRange(vskip*y, vskip*(y+1)).colRange(hskip*x,hskip*(x+1));
-			// calculate the histogram of that ROI
+			Mat roi=mat2.rowRange(vskip*y, vskip*(y+1)).colRange(hskip*x,hskip*(x+1));
 			cv::calcHist(&roi, 1, 0, Mat(), tempHist, 1, histSize, histRange, true, false );
-			// append to the histogram to be returned.
-			hist.push_back(tempHist.clone());
+
+			uniformalize10( tempHist );
+
+			secondHist.push_back(tempHist.clone());
 		}
 	}
+
+	// normalize separately
+	normalize( firstHist, firstHist, 0, 1, NORM_MINMAX );
+	normalize( secondHist, secondHist, 0, 1, NORM_MINMAX );
+	hist.push_back( firstHist );
+	hist.push_back( secondHist );
+
 }
 
 
@@ -406,6 +478,7 @@ void expression_recognizer::ARLBP(Mat& face, Mat& hist, Mat& sHist, int hdivs, i
 			 int lb = MIN(x, width); //border sizes
 
 			 uchar center = roi.at<uchar>(height,width); // = face.at<uchar>(y+h,x+w);
+
 			 for (unsigned int dx=1;dx<=width;dx++) {
 				 for (unsigned int dy=1;dy<=height;dy++) {
 					 area[0] += roi.at<uchar>(height-dy,width-dx);
@@ -436,7 +509,7 @@ void expression_recognizer::ARLBP(Mat& face, Mat& hist, Mat& sHist, int hdivs, i
 			 }
 			 tempLBP.at<uchar>(y,x) = pixel;
 
-			 // calculate 3x3 sized LBP (w==1, h==1). Bunch of if-thens is ugly, but fast
+			 // calculate 3x3 sized LBP
 			 if (smallLBP) {
 				 pixel=0;
 				 if (center <= roi.at<uchar>(height-1,width-1))	pixel += powtable[0];
@@ -453,12 +526,13 @@ void expression_recognizer::ARLBP(Mat& face, Mat& hist, Mat& sHist, int hdivs, i
 	} // end y
 	// for debugging
 	//if (smallLBP) face = tempLBP.clone();
+	face = face.colRange(width, 64+width).rowRange(height, 64+height);
 
 	// Then concatenated histogram from the LBP pic.. 64x64 picture is split into 16 16x16 pictures.
 	// Histograms are added in top->bottom, left->right order, as usual.
 
 	//convert the small LBP to uniform patterns, every other value is set to 255 for easy removal
-	if (smallLBP) LUT(tempLBPsmall, uniforms, tempLBPsmall);
+	if (smallLBP) LUT(tempLBPsmall, uniforms_8, tempLBPsmall);
 
 	int histSize[] = {256};
 	float range[] = {0, 256};
@@ -481,27 +555,39 @@ void expression_recognizer::ARLBP(Mat& face, Mat& hist, Mat& sHist, int hdivs, i
 			if (smallLBP) {
 				roi = tempLBPsmall.rowRange(vskip*y,vskip*(y+1)).colRange(hskip*x,hskip*(x+1));
 				cv::calcHist(&roi, 1, 0, Mat(), histSmall, 1, histSize, histRange, true, false);
-				histSmall = histSmall.rowRange(0,cutoffPoint+1); // clip off the non uniforms
+				histSmall = histSmall.rowRange(0,cutoffPoint_8); // clip off the non uniforms
 				sHist.push_back(histSmall.clone());
 			}
 		}
 	}
+
+	normalize( hist, hist, 0, 1, NORM_MINMAX, -1, noArray());
+	if (smallLBP) normalize( sHist, sHist, 0, 1, NORM_MINMAX, -1, noArray());
 	// ..and leave without a fuss.
 }
 
 void expression_recognizer::generate_gabor_kernels(void)
 {
 	double f = sqrt(2.0);
-	double sigma = PI_2*2;
-	double kmax = PI_2/2;
+	double sigma = M_PI*4;	 // M_PI*2*2
+	double kmax = M_PI; 	 // M_PI*2/2
 	register int x,y,u,v;
 
-	Mat gabor_cos = Mat(88,88,CV_64F);
-	Mat gabor_sin = Mat(88,88,CV_64F);
+	const unsigned int mask_size_y = 64;
+	const unsigned int mask_size_x = 64;
+
+	Mat gabor_cos = Mat(mask_size_y,mask_size_x,CV_64F);
+	Mat gabor_sin = Mat(mask_size_y,mask_size_x,CV_64F);
 	Mat kernel;
 	vector<Mat> complex;
 
-	int offset = mask_size / 2;
+	int offset_x = mask_size_x / 2;
+	int offset_y = mask_size_y / 2;
+
+	int m = getOptimalDFTSize( mask_size_y );
+	int n = getOptimalDFTSize( mask_size_x );
+    copyMakeBorder(gabor_cos, gabor_cos, 0, m - mask_size_y, 0, n - mask_size_x, BORDER_CONSTANT, Scalar::all(0));
+    copyMakeBorder(gabor_sin, gabor_sin, 0, m - mask_size_y, 0, n - mask_size_x, BORDER_CONSTANT, Scalar::all(0));
 
 	for (v=0;v<scale;v++)
     for (u=0;u<orientation;u++) {
@@ -509,10 +595,10 @@ void expression_recognizer::generate_gabor_kernels(void)
 		double phiu=u*M_PI/8.0;
 		double kv_mag=kv*kv;
 
-		for (x = 0; x < mask_size; x++)
-			for (y = 0; y< mask_size; y++) {
-				int i=x-offset;
-				int j=y-offset;
+		for (x = 0; x < mask_size_x; x++)
+			for (y = 0; y< mask_size_y; y++) {
+				int i=x-offset_x;
+				int j=y-offset_y;
 				double mag=(double)(i*i+j*j);
 				gabor_cos.at<double>(y,x) = kv_mag/sigma*exp(-0.5*kv_mag*mag/sigma)*
 							(cos(kv*(i*cos(phiu)+j*sin(phiu)))-exp(-1.0*sigma/2.0));
@@ -525,9 +611,11 @@ void expression_recognizer::generate_gabor_kernels(void)
 		complex.push_back(gabor_sin);
 
 		merge(complex, kernel);
+		dft(kernel,kernel, DFT_COMPLEX_OUTPUT+ DFT_SCALE,0);
 
 		gaborKernels.push_back(kernel.clone());
 	}
+	LOGD("debug: Kernels done");
 }
 
 // Filteres a face picture with 40 Gabor-filters, arranging the results into 3D-array-like
@@ -543,13 +631,23 @@ void expression_recognizer::gaborLBPHistograms(Mat& face, Mat& hist, Mat& lut, i
 	CV_Assert( lut.total() == 256 );
 	CV_Assert( lut.isContinuous() );
 
-	Mat tmppic = Mat( Size(mask_size, mask_size), CV_64FC2);
-	Mat holder = Mat( Size(mask_size, mask_size), CV_64FC1);
+	Mat tmppic = Mat( Size(64, 64), CV_64FC2);
+	Mat holder = Mat( Size(64, 64), CV_64FC1);
 
 	vector<Mat> planes;
-	face.convertTo(face, CV_64F);
-	resize(face, face, Size(88,88)); // from the paper, experiments.
-	//face = face.colRange(4,84); // crop edges, face is now 88x80
+	resize(face, face, Size(64,64));
+	//face = face.colRange(8,80);//.clone();
+	vector<Mat> doubleface;
+	face.convertTo(face, CV_64FC2);
+
+	int m = getOptimalDFTSize( face.size().height );
+	int n = getOptimalDFTSize( face.size().width );
+	copyMakeBorder(face, face, 0, m - face.size().height, 0, n - face.size().width, BORDER_CONSTANT, Scalar::all(0));
+
+	doubleface.clear();
+	doubleface.push_back(face);
+	doubleface.push_back(face);
+	merge( doubleface, face );
 
 	dft(face, face, DFT_COMPLEX_OUTPUT + DFT_SCALE, 0);
 
@@ -557,30 +655,30 @@ void expression_recognizer::gaborLBPHistograms(Mat& face, Mat& hist, Mat& lut, i
 	vector<Mat> binaryGaborVolume;
 	for (unsigned int freq=0;freq<scale;freq++) {
 		for (unsigned int rot=0;rot<orientation;rot++) {
+			unsigned int index = (freq*orientation)+rot;
 
-			Mat tmp = gaborKernels[(freq*orientation)+rot];
+			Mat tmp = gaborKernels[index];
 			mulSpectrums(face, tmp, tmppic, 0, false);
-
 			idft(tmppic, tmppic, DFT_SCALE, 0);
+
 			planes.clear();
-
 			split(tmppic, planes);
-			Mat p0=planes[0]; Mat p1=planes[1];
+			Mat p0=planes[0];
+			Mat p1=planes[1];
 			magnitude(p0,p1,holder);
-
+			//holder = holder.colRange(0, 64).rowRange(0,64);
 			// From real and imaginary parts we can get the magnitude for identification
 			// add 1px borders for later, store in gabor-cube
-			//Imgproc.filter2D(matpic, matpic, -1, gaborKernels.get(rot+(freq*rotation_dividers)));
 
 			copyMakeBorder(holder, holder,1, 1, 1, 1, BORDER_CONSTANT, Scalar::all(0));
-			gaborCube[rot+(freq*orientation)] = holder.clone();
+			gaborCube[index] = holder.clone();
 		}
 	}
 
 	if (step == 0) face = gaborCube[ind];
 
 	vector<Mat> LBP;
-	Mat lbp = Mat(Size(88,88),CV_8U);
+	Mat lbp = Mat(64,64,CV_8U);
 
 	for (unsigned int freq=0;freq<scale;freq++) {
 		for (unsigned int rot=0;rot<orientation;rot++) {
@@ -623,10 +721,11 @@ void expression_recognizer::gaborLBPHistograms(Mat& face, Mat& hist, Mat& lut, i
 					lbp.at<uchar>(y-1,x-1) = pix;
 				}
 			}
-			//LUT(lbp, uniforms, lbp); // 59 uniform patterns
-			Mat tmp;
-			lbp.copyTo(tmp);
-			LBP.push_back(tmp);
+
+			// 59 uniform patterns
+			if (N>0) LUT(lbp, lut, lbp);
+
+			LBP.push_back(lbp.clone());
 		}
 	}
 
@@ -637,44 +736,153 @@ void expression_recognizer::gaborLBPHistograms(Mat& face, Mat& hist, Mat& lut, i
 	const float* histRange[] = {range};
 	int channels[]={0};
 
-	static bool normal_operation = true;
-	if (normal_operation) {
-		static unsigned int xstep=10, ystep=11;
-		static unsigned int xsize = 8, ysize = 8;
-		for (unsigned int i=0;i<LBP.size();i++) {
-			Mat lbp = LBP[i];
-			for (unsigned int y = 0;y<ystep;y++) {
-				for (unsigned int x = 0;x<xstep;x++) {
-					MatND tempHist;
+	static double areaWeights[] =		{  1,1,1,1,1,1,1,1,
+								   	   	   1,1,1,1,1,1,1,1,
+										   1,4,4,3,3,4,4,1,
+										   1,4,4,3,3,4,4,1,
+										   0,1,1,1,1,1,1,0,
+										   0,1,2,2,2,2,1,0,
+										   0,1,2,2,2,2,1,0,
+										   0,0,1,1,1,1,0,0 };
+
+
+	static unsigned int xstep=8, ystep=8;
+	static unsigned int xsize=8, ysize=8;
+
+	for (unsigned int y = 0;y<ystep;y++) {
+		for (unsigned int x = 0;x<xstep;x++) {
+			Mat accuhist = Mat::zeros(256,1,CV_32F);
+			unsigned int weight = areaWeights[x+(y*xsize)];
+
+			if (weight != 0) {
+				for (unsigned int i=0;i<scale*orientation;i++) {
+					Mat tempHist = Mat::zeros(256,1,CV_32F);
+					lbp = LBP[i];
 
 					Mat roi = lbp.rowRange(y*ysize, (y+1)*ysize).colRange(x*xsize,(x+1)*xsize);
-					if (N>0) LUT(roi, lut, roi);
-
 					calcHist(&roi, 1, 0, Mat(), tempHist, 1, histSize, histRange, true, false );
-
-					if (N>0) {
-						tempHist.convertTo(tempHist, CV_8U);
-						tempHist = tempHist.rowRange(0, N);
-
-						for (unsigned int t=0;t<8;t++) LOGD("%u ", tempHist.at<uchar>(0,t));
-						// cut from 256 values per 8x8 area to 8 values per area
-					}
-
-					hist.push_back(tempHist.clone());
+					scaleAdd(tempHist, 1, accuhist, accuhist);
 				}
-			}
-		}
-		LOGD("histtot:%u %u",hist.size().height, hist.size().width);
-	} else {
-		Mat tempHist = Mat(256,1,hist.type());
-		// for debugging
 
-		for (int i=0;i<LBP.size();i++) {
-			Mat lbp = LBP[i];
-			calcHist(&lbp,1,0,Mat(),hist,1,histSize,histRange,true,true);
-			//hist = tempHist.rowRange(0,cutoffPoint+1); // clip off the non uniforms
-			//add( tempHist, hist, hist );
+				if (N>0) accuhist = accuhist.rowRange(0, N);
+				// cut from 256 values per 8x8 area to 8 values per area
+				//dump( accuhist );
+				 hist.push_back(accuhist.clone());
+				//cuts the ID vector length even more
+			}
 		}
 	}
 
+	normalize( hist, hist, 0, 1, NORM_MINMAX, -1, noArray());
+}
+
+void expression_recognizer::dump(Mat& mat) {
+	string s("");
+	Mat local;
+	mat.convertTo(local, CV_64F);
+
+	for (unsigned int y=0;y<mat.size().height;y++) {
+		for (unsigned int x=0;x<mat.size().width;x++) {
+			s.append(tostr( local.at<double>(y,x) ));
+			s.append(" ");
+		}
+	}
+	LOGD("debug dump: %s", s.c_str());
+}
+
+void expression_recognizer::edgeHistogram( Mat& face, Mat& hist ) {
+	CV_Assert( face.depth() == CV_8U );
+	CV_Assert( face.size() == Size(64, 64));
+	CV_Assert( face.channels() == 1 );
+
+	static unsigned int M = 10, N = 8;
+
+	// calculate edge images
+	Mat h_edges = Mat(face.size(), CV_16S);
+	Mat v_edges = Mat(face.size(), CV_16S);
+	Mat h_edges_pow = Mat( face.size(), CV_32F );
+	Mat v_edges_pow = Mat( face.size(), CV_32F );
+
+	Mat vertical = Mat(1,3,CV_16S);
+	vertical.at<signed short>(0,0) = -1;
+	vertical.at<signed short>(0,1) = 0;
+	vertical.at<signed short>(0,2) = 1;
+	Mat horizontal = vertical.t();
+
+	filter2D( face, v_edges, CV_16S, vertical, Point(-1,-1), 0, BORDER_DEFAULT );
+	filter2D( face, h_edges, CV_16S, horizontal, Point(-1,-1), 0, BORDER_DEFAULT );
+
+	Mat magnitude = Mat( face.size(), CV_32F);
+	Mat direction = Mat::zeros( face.size(), CV_8U );
+
+	double angle = 0.0f;
+	for (unsigned int y=0;y<face.size().height;y++) {
+		for (unsigned int x=0;x<face.size().width;x++) {
+
+			if (h_edges.at<signed short>(y,x) != 0) {
+				if (v_edges.at<signed short>(y,x) != 0) {
+					angle = atan2( v_edges.at<signed short>(y,x), h_edges.at<signed short>(y,x));
+				} else angle = 0.0f;
+				if (angle < 0.0f) angle += (2*M_PI);
+
+				for (unsigned int n = N; n > 1; n--) {
+					if (angle < (2*M_PI*n/N)) direction.at<uchar>(y,x) = n-1;
+				}
+			} else {
+				direction.at<uchar>(y,x) = 0;
+			}
+
+			//if (x == 32) LOGD("angle: %u, %f", direction.at<uchar>(y,x), angle);
+		}
+	}
+
+	v_edges.convertTo(v_edges, CV_32F);
+	h_edges.convertTo(h_edges, CV_32F);
+	pow( v_edges, 2, v_edges_pow );
+	pow( h_edges, 2, h_edges_pow );
+	add( h_edges_pow, v_edges_pow, magnitude );
+	sqrt(magnitude, magnitude);
+
+	normalize( magnitude, magnitude, 0, M+1-0.001, NORM_MINMAX, CV_8U);
+	//normalize( direction, direction, 0, N-0.001, NORM_MINMAX, CV_8U); // so everything rounds down to 0-(N-1)
+
+	/*LOGD("dir mag");
+	dump( direction );
+	dump( magnitude );*/
+
+	unsigned int bin = 0;
+	for (unsigned int y=0;y<face.size().height;y++) {
+		for (unsigned int x=0;x<face.size().width;x++) {
+
+			unsigned int m = magnitude.at<uchar>(y,x);
+			unsigned int n = direction.at<uchar>(y,x);
+
+			if (m == 0) bin = 0; else bin = ((m-1)*N)+n+1;
+
+			face.at<uchar>(y,x) = bin; //histogram bins 0-81
+			//if (x == 32) LOGD("debug: m:%u, n:%u = bin = %u", m, n, bin);
+		}
+	}
+
+	int histSize[] = {256};
+	float range[] = {0, 256};
+	const float* histRange[] = {range};
+	int channels[]={0};
+
+	// split into 8x8 subimages
+	static unsigned int ystep = 8, xstep = 8, xsize = 8, ysize = 8;
+	for (unsigned int y = 0;y<ystep;y++) {
+		for (unsigned int x = 0;x<xstep;x++) {
+			// take histograms
+			Mat tempHist = Mat(256,1,CV_8U);
+
+			Mat roi = face.rowRange(y*ysize, (y+1)*ysize).colRange(x*xsize,(x+1)*xsize);
+			calcHist(&roi, 1, 0, Mat(), tempHist, 1, histSize, histRange, true, false );
+
+			tempHist = tempHist.rowRange(0, 82);
+			hist.push_back(tempHist);
+		}
+	}
+
+	normalize( hist, hist, 0, 1, NORM_MINMAX);
 }

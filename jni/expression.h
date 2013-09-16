@@ -44,17 +44,14 @@ JNIEXPORT void JNICALL Java_com_siperia_peopleinphotos_expression_nativeSkinThre
   (JNIEnv *, jclass, jlong, jlong, jlong, jboolean);
 
 JNIEXPORT void JNICALL Java_com_siperia_peopleinphotos_expression_nativeLocalMeanThreshold
-  (JNIEnv *, jclass, jlong, jlong, jint, jint);
+  (JNIEnv *, jclass, jlong, jlong, jint, jint, jint, jfloat);
 
 JNIEXPORT void JNICALL Java_com_siperia_peopleinphotos_expression_nativeConcatHist
   (JNIEnv *, jclass, jlong, jlong, jlong, jlong);
 
-JNIEXPORT jint JNICALL Java_com_siperia_peopleinphotos_expression_nativePredict
-  (JNIEnv *, jclass, jlong, jlong);
-
 
 JNIEXPORT void JNICALL Java_com_siperia_peopleinphotos_expression_nativeInitModels
-(JNIEnv *, jclass, jlong, jint, jdouble, jint, jdouble );
+(JNIEnv *, jclass, jlong, jint, jdouble, jint, jdouble, jboolean );
 
 JNIEXPORT void JNICALL Java_com_siperia_peopleinphotos_expression_nativeAddFisherface
 (JNIEnv *, jclass, jlong, jlong, jint );
@@ -67,6 +64,9 @@ JNIEXPORT jint JNICALL Java_com_siperia_peopleinphotos_expression_nativePredictF
 
 JNIEXPORT void JNICALL Java_com_siperia_peopleinphotos_expression_nativeAddEigenface
 (JNIEnv *, jclass, jlong, jlong, jint );
+
+JNIEXPORT void JNICALL Java_com_siperia_peopleinphotos_expression_nativeEdgeHistogram
+  (JNIEnv *, jclass, jlong, jlong, jlong);
 
 JNIEXPORT void JNICALL Java_com_siperia_peopleinphotos_expression_nativeTrainEigenfaces
 (JNIEnv *, jclass, jlong );

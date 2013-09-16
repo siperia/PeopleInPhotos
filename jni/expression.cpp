@@ -62,9 +62,9 @@ JNIEXPORT void JNICALL Java_com_siperia_peopleinphotos_expression_nativeDestroyO
 }
 
 JNIEXPORT void JNICALL Java_com_siperia_peopleinphotos_expression_nativeInitModels
-(JNIEnv * jenv, jclass, jlong thiz, jint fisherfaces, jdouble fisherconf, jint eigenfaces, jdouble eigenconf ) {
+(JNIEnv * jenv, jclass, jlong thiz, jint fisherfaces, jdouble fisherconf, jint eigenfaces, jdouble eigenconf, jboolean load ) {
 	try {
-		((expression_recognizer*)thiz)->initModels(fisherfaces, fisherconf, eigenfaces, eigenconf);
+		((expression_recognizer*)thiz)->initModels(fisherfaces, fisherconf, eigenfaces, eigenconf, load);
 	}
 	catcher("nativeInitModels")
 }
@@ -125,6 +125,14 @@ JNIEXPORT jint JNICALL Java_com_siperia_peopleinphotos_expression_nativePredictE
 	return retval;
 }
 
+JNIEXPORT void JNICALL Java_com_siperia_peopleinphotos_expression_nativeEdgeHistogram
+(JNIEnv * jenv, jclass, jlong thiz, jlong jFace, jlong jHist) {
+	try {
+		((expression_recognizer*)thiz)->edgeHistogram(*((Mat*) jFace),*((Mat*) jHist));
+	}
+	catcher("nativeEdgeHistogram")
+}
+
 JNIEXPORT void JNICALL Java_com_siperia_peopleinphotos_expression_nativeSkinThreshold
 (JNIEnv * jenv, jclass, jlong thiz, jlong jFrame, jlong clip, jboolean scan)
 {
@@ -139,9 +147,9 @@ JNIEXPORT void JNICALL Java_com_siperia_peopleinphotos_expression_nativeSkinThre
 }
 
 JNIEXPORT void JNICALL Java_com_siperia_peopleinphotos_expression_nativeLocalMeanThreshold
-(JNIEnv * jenv, jclass, jlong thiz, jlong jFaceMat, jint vdivs, jint hdivs) {
+(JNIEnv * jenv, jclass, jlong thiz, jlong jFaceMat, jint A, jint B, jint P, jfloat phase) {
 	try {
-		((expression_recognizer*)thiz)->localMeanThreshold(*((Mat*)jFaceMat), vdivs, hdivs);
+		((expression_recognizer*)thiz)->localMeanThreshold(*((Mat*)jFaceMat), A, B, P, phase);
 	}
 	catcher("nativeLocalMeanThreshold")
 }

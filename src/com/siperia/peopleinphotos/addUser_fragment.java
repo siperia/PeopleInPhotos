@@ -2,9 +2,12 @@ package com.siperia.peopleinphotos;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.util.Random;
 
 import org.opencv.android.Utils;
 import org.opencv.core.Mat;
+import org.opencv.core.Size;
+import org.opencv.imgproc.Imgproc;
 
 import android.app.Dialog;
 import android.app.DialogFragment;
@@ -38,6 +41,7 @@ public class addUser_fragment extends DialogFragment {
 	
 	private Mat ROI = null;
 	private Bitmap facepic;
+	private Bitmap thumbnail;
 	private int i;
 	private int t;
 	private FaceDetectionAndProcessing faceclass = null;
@@ -46,6 +50,15 @@ public class addUser_fragment extends DialogFragment {
 	
 	public void setArgs(Mat ROI_, int i_, int t_, FaceDetectionAndProcessing face_) {
 		ROI = ROI_;
+		
+		facepic = Bitmap.createBitmap(ROI.width(), ROI.height(), Bitmap.Config.ARGB_8888);
+		Utils.matToBitmap(ROI, facepic);
+		
+		Mat tmpmat = new Mat();
+		Imgproc.resize(ROI, tmpmat, new Size(150,150));
+		thumbnail = Bitmap.createBitmap(150,150, Bitmap.Config.ARGB_8888);
+		Utils.matToBitmap(tmpmat, thumbnail);
+		
 		i = i_;
 		t = t_;
 		faceclass = face_;
@@ -65,9 +78,7 @@ public class addUser_fragment extends DialogFragment {
 		
 		image = (ImageView)view.findViewById(R.id.imageView1);
 				
-		facepic = Bitmap.createBitmap(ROI.width(), ROI.height(), Bitmap.Config.ARGB_8888);
-		Utils.matToBitmap(ROI, facepic);
-		image.setImageBitmap(facepic);
+		image.setImageBitmap(thumbnail);
 		
 		final TextView text = (TextView)view.findViewById(R.id.textView_distance);
 		text.setText(R.string.whoisthis);
@@ -105,9 +116,13 @@ public class addUser_fragment extends DialogFragment {
 								if (ID.getName().equals( name.toString() )) existingID = true;
 							}
 							if (!existingID) {
-								Identity newIdent = new Identity(name.toString(), faceclass.identities.size());
+								int max = -1; // first = 0
+								for (Identity ID: faceclass.identities)
+									if (ID.getID() > max) max = ID.getID();
+								
+								Identity newIdent = new Identity(name.toString(), max+1);
 								faceclass.identities.add( newIdent );
-								storeFaceSample( name.toString(), facepic);
+								storeFaceSample( name.toString(), facepic );
 								Toast.makeText(getActivity(), "Identity "+name.toString() + " added.",
 				    					Toast.LENGTH_LONG).show();
 								faceclass.updateSampleFiles();
@@ -152,47 +167,37 @@ public class addUser_fragment extends DialogFragment {
 		return view;
 	}
 	
-	// Saves a sample image taken from live frame grab. (or anywhere else)
-		private void storeFaceSample(String ident, Bitmap pic) {
-			File identFileDir = new File(identRootDir, ident);
-			try {
-	    		if (!identRootDir.exists() && !identRootDir.mkdirs()) {
-	    			throw new Exception();
-	    		}
-	    		if (!identFileDir.exists() && !identFileDir.mkdirs()) {
-	    			throw new Exception();
-	    		}
-			} catch ( Exception  e ) {				    			
-				Toast.makeText(getActivity(), "Can't create a directory to store identity photos.",
-						Toast.LENGTH_LONG).show();
-				return;
-			}
-			
-			// search for first free photo index for "ident"
-			int picNo = 0;
-			boolean found = false;
-			String photoFileName;
-			String absoluteFileName = null;
-			
-			while (!found) {
-				picNo++;
-				
-				photoFileName = ident + "." + picNo + ".JPG";
-				absoluteFileName = identFileDir.getPath() + File.separator + photoFileName;
-				//Log.d(TAG, "Probing existance of file "+absoluteFileName);
-				File photoFile = new File( absoluteFileName );
-				if (!photoFile.exists()) found = true;
-			}
-			
-			File photoFile = new File(absoluteFileName);
-			try {
-				FileOutputStream fos = new FileOutputStream(photoFile);
-				pic.compress(Bitmap.CompressFormat.JPEG, 100, fos);
-				fos.close();
-				Toast.makeText(getActivity(), "Ident sample "+picNo+" saved for "+ident,
-						Toast.LENGTH_LONG).show();
-			} catch (Exception error) {
-				Toast.makeText(getActivity(), "Couldn't save the ident sample.", Toast.LENGTH_LONG).show();
-			}
+	// Saves a sample image taken from frame grab. (or anywhere else)
+	public void storeFaceSample( String ident, Bitmap pic) {
+		
+		Random generator = new Random( System.currentTimeMillis() );
+		try {
+    		if (!identRootDir.exists() && !identRootDir.mkdirs()) {
+    			throw new Exception();
+    		}
+		} catch ( Exception  e ) {				    			
+			Toast.makeText(getActivity(), "Can't open directory to store identity photos.",
+					Toast.LENGTH_LONG).show();
+			return;
 		}
+		
+		String photoFileName;
+		String absoluteFileName = null;
+		
+		int classNo=99999;
+		for (Identity ID: faceclass.identities) if (ID.getName().equals(ident)) classNo = ID.getID();
+							
+		photoFileName = ident + "_" + classNo + "_" + generator.nextInt() + ".JPG";
+		absoluteFileName = identRootDir.getPath() + File.separator + photoFileName;
+		//Log.d(TAG, "Probing existance of file "+absoluteFileName);
+				
+		File photoFile = new File(absoluteFileName);
+		try {
+			FileOutputStream fos = new FileOutputStream(photoFile);
+			pic.compress(Bitmap.CompressFormat.JPEG, 100, fos);
+			fos.close();
+		} catch (Exception error) {
+			Toast.makeText(getActivity(), "Couldn't save the ident sample.", Toast.LENGTH_LONG).show();
+		}
+	}
 }

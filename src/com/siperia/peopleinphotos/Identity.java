@@ -67,18 +67,19 @@ public class Identity {
 		double[] filtered = new double[fin.length];
 		features = new int[fin.length];
 		features = fin;
-		
+				
 		for (sample s: faces) {
-			double[] allGabor = new MatOfDouble(s.getGaborMat()).toArray();
+			Log.d(TAG, "debug gabor: "+s.getGaborMat());
+			byte in[] = new byte[3];
 			for (int u = 0;u < fin.length; u++) {
-				filtered[u] = allGabor[fin[u]];
+				s.getGaborMat().get(0,fin[u],in);
+				filtered[u] = in[0];
 			}
 			s.setFiltered(filtered);
 		}
 	}
 	
 	public void calculateMeanGabor() {
-		// FFS openCV !
 		double[] meanface = null;
 		for (sample s: faces) {
 			double[] tmp = s.getFilteredGabor().toArray();
@@ -108,9 +109,6 @@ public class Identity {
 		}
 	}
 	
-	public void setGender(int gin_) { gender = gin_; }
-	public int getGender() { return gender; }
-	
 	public class sample {
 		String fileName;
 		Mat rawPicture = new Mat();
@@ -129,7 +127,7 @@ public class Identity {
 			Log.d(TAG, "reloading "+fileName);
 			if (fileName != null) {
 				File photoFile = new File( fileName );
-				if (photoFile.exists()) {					
+				if (photoFile.exists()) {
 					Bitmap bm = null;
 					try {
 						FileInputStream fis = new FileInputStream(photoFile);
@@ -139,6 +137,7 @@ public class Identity {
 			            e.printStackTrace();
 			            Log.e(TAG, "IOException: " + e);
 			        }
+					if (rawPicture == null) rawPicture = new Mat();
 					Utils.bitmapToMat(bm, rawPicture);
 					Imgproc.cvtColor(rawPicture, rawPicture, Imgproc.COLOR_RGB2GRAY);
 					Imgproc.equalizeHist(rawPicture, rawPicture);

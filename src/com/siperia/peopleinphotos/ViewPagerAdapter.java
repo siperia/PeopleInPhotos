@@ -5,6 +5,7 @@ import java.util.List;
 
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.support.v4.view.PagerAdapter;
 import android.support.v4.view.ViewPager;
 import android.view.LayoutInflater;
@@ -59,8 +60,13 @@ public class ViewPagerAdapter extends PagerAdapter {
         // Capture position and set to the ImageView
         
         // Load photo and display it in the imageview
-        Bitmap bmap = GalleryScanner.decodeSampledBitmapFromFile(new File(sims.get(position).string), reqWidth, reqHeight);
-                
+        final BitmapFactory.Options ops = new BitmapFactory.Options();
+        ops.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(sims.get(position).string ,ops);
+        ops.inSampleSize = photo.calculateInSampleSize(ops, 640, 480);
+        ops.inJustDecodeBounds = false;
+        Bitmap bmap = BitmapFactory.decodeFile(sims.get(position).string ,ops);
+                        
         imgview.setImageBitmap(bmap);
  
         // Add viewpager_item.xml to ViewPager

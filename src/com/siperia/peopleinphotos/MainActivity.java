@@ -7,6 +7,7 @@ import android.app.AlertDialog;
 import android.app.Dialog;
 import android.app.Fragment;
 import android.app.FragmentTransaction;
+import android.app.AlertDialog.Builder;
 import android.view.Menu;
 
 import java.io.File;
@@ -56,8 +57,7 @@ public class MainActivity extends Activity implements CvCameraViewListener2  {
 
     private static final String    TAG					= "PeopleInPhotos::MainActivity";
     private static final File 	   sdDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES);
-    private static final File	   identRootDir			= new File(sdDir, "PiP_idents");
-        	
+            	
     private static Scalar 		   FACE_RECT_COLOR		= new Scalar(0,255,0,255);
     private static Scalar		   NOTICE_TEXT_COLOR	= new Scalar(255,30,0,255);
     private static Scalar		   BLACK				= new Scalar(0,0,0,255);
@@ -139,7 +139,7 @@ public class MainActivity extends Activity implements CvCameraViewListener2  {
                         	{
                             	if (selectedTriggerItems[TOUCH_TRIGGER])
                             	{
-                            		helper.savePicture(mRgba, true, "TouchTriggered");
+                            		helper.savePicture(mRgba, null, true, "TouchTriggered");
                             	} else {
                             		// Grab teaching samples from people currently in frame
                             		for (int i = facesArray.length-1; i > -1; i--)
@@ -355,7 +355,7 @@ public class MainActivity extends Activity implements CvCameraViewListener2  {
     	CharSequence[] Triggermenu = {"Touch","Smile","Group smile","Spesific identity","New identity","Maximum rate"};
     	CharSequence[] Recognitionmenu = {"Viola-Jones","Local Binary Patterns"};
     	CharSequence[] Identificationmenu = {"Eigenfaces","Gabor Volume-LBP","Switch off identification"};
-    	CharSequence[] Testingmenu = {"Photo gallery","Save Eigenface pictures","Calculate gender confusion"};
+    	CharSequence[] Testingmenu = {"Photo gallery","Save Eigenface pictures","Calculate confusions","ID testing"};
     	CharSequence[] Preprocessingmenu = {"Turn off preprocessing","Histogram equalization", "Skin thresholding"};
         if (item == mItemSystem) {
     		builder.setTitle("System options");
@@ -457,12 +457,32 @@ public class MainActivity extends Activity implements CvCameraViewListener2  {
 		    		faceclass.saveEigenpictures();
 		    		break;
 		    	case 2:
-		    		faceclass.genderConfusion();
+		    		AlertDialog.Builder retrain = new AlertDialog.Builder(mainActivityContext);
+		    		retrain.setTitle("Retrain attribute classifiers?");
+		    		retrain.setPositiveButton("Yes", new DialogInterface.OnClickListener() {
+		    			@Override
+		    			public void onClick(DialogInterface dialog, int id) {
+		    				faceclass.expclass.trainAttributes();
+		    				faceclass.confusionMatrices();
+		    			}
+		    		});
+		    		retrain.setNegativeButton("No", new DialogInterface.OnClickListener() {
+		    			@Override
+		    			public void onClick(DialogInterface dialog, int id) {
+		    				faceclass.confusionMatrices();
+		    			}		    			
+		    		});
+		    		
+		    		AlertDialog retrainD = retrain.create();
+		    		retrainD.show();
+		    		
 		    		break;
 		    	case 3:
+		    		faceclass.recognitionTest();
 		    		break;
 		    	default:break;
 		    	}
+				dialog.dismiss();
 			}});
 		}            
         
@@ -529,7 +549,7 @@ public class MainActivity extends Activity implements CvCameraViewListener2  {
         ft.addToBackStack(null);
         
         // Create and show the dialog.
-        GalleryScanner newFragment = GalleryScanner.newInstance(faceclass, mOpenCvCameraView, (int)photoSize.x, (int)photoSize.y);
+        GalleryScanner newFragment = GalleryScanner.newInstance(faceclass, mOpenCvCameraView);
         newFragment.show(ft, "GalleryScanner");
 	}
 

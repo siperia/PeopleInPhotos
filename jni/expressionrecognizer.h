@@ -17,6 +17,7 @@
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/ml/ml.hpp>
 #include "opencv2/contrib/contrib.hpp"
+#include <sstream>
 
 using namespace cv;
 
@@ -29,13 +30,14 @@ class expression_recognizer {
 private:
 	int height;
 	int width;
-	unsigned int cutoffPoint;
+	unsigned int cutoffPoint_8;
+	unsigned int cutoffPoint_10;
 	unsigned int currA, currB, currP, currPhase; // current ELBP parameters
 	coord<int> ELBP_coords[16];
 	coord<int> offsets[16];
 
 	unsigned int area[8];
-	Mat uniforms;
+	Mat uniforms_8, uniforms_10;
 
 	Ptr<FaceRecognizer> fisherface_model;
 	Ptr<FaceRecognizer> eigenface_model;
@@ -62,6 +64,9 @@ private:
 	const static unsigned int orientation = 8;
 	const static unsigned int mask_size = 88;
 
+	template <typename T> string tostr(const T& t) { std::ostringstream os; os<<t; return os.str(); };
+	void dump(Mat& mat);
+
 public:
 	expression_recognizer();
 	virtual ~expression_recognizer();
@@ -69,12 +74,14 @@ public:
 	virtual void setFilterSize(int h_, int w_);
 	virtual void ARLBP(Mat& face_, Mat& hist_, Mat& sHist_, int vdivs , int hdivs );
 	double interpolate_at_ptr(int* upperLeft, int i, int columns);
-	virtual void ELBP(cv::Mat& face, unsigned int A, unsigned int B, unsigned int P, float phase);
-	virtual void localMeanThreshold(Mat& matpic, int vdivs, int hdivs);
+	void updateELBPkernel( int A, int B, int P, float phase );
+	virtual void ELBP(Mat& face, unsigned int A, unsigned int B, unsigned int P, float phase);
+	virtual void localMeanThreshold(Mat& matpic, int A, int B, int P, float phase);
+	void uniformalize10( Mat& mat );
 	virtual void skinThreshold( Mat& frame_,std::vector<cv::Rect>& result, bool scan );
 	virtual void concatHist(Mat& jMat1, Mat& jMat2, Mat& jHist);
 
-	virtual void initModels(int fisherfaces,double fisherconf,int eigenfaces,double eigenconf);
+	virtual void initModels(int fisherfaces,double fisherconf,int eigenfaces,double eigenconf, bool load);
 
 	virtual void addFisherface(Mat& face_, int classification_);
 	virtual void trainFisherfaces();
@@ -83,6 +90,8 @@ public:
 	virtual void addEigenface(Mat& face, int classification);
 	virtual void trainEigenfaces();
 	virtual int predictEigenface( Mat& face ) const;
+
+	virtual void edgeHistogram( Mat& face, Mat& hist );
 
 	void generate_gabor_kernels();
 	virtual void gaborLBPHistograms(Mat& face, Mat& hist, Mat& lut,int,int,int);

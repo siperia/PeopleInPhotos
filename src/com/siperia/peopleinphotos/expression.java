@@ -9,8 +9,8 @@ public class expression
    		mNativeObj = nativeCreateObject();
     }
 	
-	public void initModels( int fisherfaces, double fisherconf, int eigenfaces, double eigenconf) {
-		nativeInitModels( mNativeObj, fisherfaces, fisherconf, eigenfaces, eigenconf);
+	public void initModels( int fisherfaces, double fisherconf, int eigenfaces, double eigenconf, boolean load) {
+		nativeInitModels( mNativeObj, fisherfaces, fisherconf, eigenfaces, eigenconf, load);
 	}
 	
 	public void addFisherface( Mat face, int classification ) {
@@ -37,6 +37,10 @@ public class expression
 		return nativePredictEigenface( mNativeObj, face.getNativeObjAddr());
 	}
 	
+	public void edgeHistogram( Mat face, Mat hist) {
+		nativeEdgeHistogram( mNativeObj, face.getNativeObjAddr(), hist.getNativeObjAddr());
+	}
+	
 	public void ELBP( Mat face, int A, int B, int P, float phase) {
 		nativeELBP( mNativeObj, face.getNativeObjAddr(), A, B, P, phase);
 	}
@@ -53,8 +57,8 @@ public class expression
     	nativeSkinThreshold( mNativeObj, mRgba.getNativeObjAddr(), clip.getNativeObjAddr(), scan);
     }
     
-    public void localMeanThreshold(Mat matpic, int vdivs, int hdivs) {
-    	nativeLocalMeanThreshold(mNativeObj, matpic.getNativeObjAddr(), vdivs, hdivs);
+    public void localMeanThreshold(Mat matpic, int A, int B, int P, float phase) {
+    	nativeLocalMeanThreshold(mNativeObj, matpic.getNativeObjAddr(), A,B,P,phase);
     }
     
     public void concatHist( Mat facepic, Mat means, Mat age_hist) {
@@ -82,7 +86,7 @@ public class expression
     private static native void nativeDestroyObject(long thiz);
     
     private static native void nativeInitModels( long thiz, int fisherfaces, double fisherconf,
-    														int eigenfaces, double eigenconf);
+    														int eigenfaces, double eigenconf, boolean load);
     
     private static native void nativeAddFisherface( long thiz, long face, int classification );
     private static native void nativeTrainFisherfaces( long thiz );
@@ -96,10 +100,10 @@ public class expression
     private static native void nativeSetFilterSize(long thiz, int h, int w);
     private static native void nativeARLBP(long thiz, long inputImage, long histogram, long sHistogram, int vdivs, int hdivs);
     private static native void nativeSkinThreshold( long thiz, long mRgba, long clip, boolean scan);
-    private static native void nativeLocalMeanThreshold( long thiz, long face, int vdivs, int hdivs);
+    private static native void nativeLocalMeanThreshold( long thiz, long face, int A, int B, int P, float phase);
     private static native void nativeConcatHist( long thiz, long facepic, long means, long age_hist);
     private static native void nativeGaborLBPHistograms( long thiz, long pic, long hist,long LUT, int N,int step, int ind);
-    
+    private static native void nativeEdgeHistogram( long thiz, long face, long hist );
     private static native void nativeGetEigenPictures( long thiz, long a, long b, long c, long d, long e);
     
 }
